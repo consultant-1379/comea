@@ -1,0 +1,86 @@
+# This oam sshd config file is used to launch oam sshd instance for com.
+# And this oam sshd will be launched by SA, but the
+# configuration here will be modified by COMSSHD MANAGER in COM.
+# This configutation file includes port configuration for cli and netconf.
+
+
+#Port to connect to cli interface
+#cli:port:begin
+#cli:port:end
+
+#Port to connect to netconf interface
+#netconf:port:begin
+#netconf:port:end
+
+
+#Here listen-Address  is very much needed to keep oam sshd running without
+#any port collision when user chooses to have still 22 for OS SSHD and
+#different port for cli interface (In the case when both the cli and
+#netconf interfaces are locked, that means ports are cleared) "
+#listenaddress will be enabled only when both cli and netconf interfaces get locked
+#(or) when both the ports are removed, otherwise it will be in commented
+#listen:address:begin
+ListenAddress 127.0.0.1:830
+#listen:address:end
+
+#denyusers will be enabled always for the root user
+#to avoid the connection towards NBI(cli/netconf) interfaces
+DenyUsers root
+LogLevel INFO
+MaxAuthTries 4
+IgnoreRhosts yes
+HostbasedAuthentication no
+PermitUserEnvironment no
+LoginGraceTime 60
+AllowUsers *
+# Disable legacy (protocol version 1) support in the server for new
+# installations. In future the default will change to require explicit
+# activation of protocol 1
+Protocol 2
+
+# Disable PasswordAuthentication, only use ChallengeResponseAuthentication
+PasswordAuthentication no
+PermitEmptyPasswords no
+# If you just want the PAM account and session checks to run without
+# PAM authentication, then enable this but set PasswordAuthentication
+# and ChallengeResponseAuthentication to 'no'.
+UsePAM yes
+
+# Disable AllowTcpForwarding
+AllowTcpForwarding no
+
+# MaxStartups specifies the maximum number of concurrent
+#unauthenticated connections to the SSH daemon. Additional 
+#connections will be dropped until authentication succeeds 
+#or the LoginGraceTime expires for a connection.
+MaxStartups 10:30:60
+
+#ClientAliveInterval 0
+#ClientAliveCountMax 3
+
+X11Forwarding no
+
+# Subsystem section
+#cli:subsystem:begin
+#cli:subsystem:end
+
+#netconf:subsystem:begin
+#netconf:subsystem:end
+
+AcceptEnv LANG LC_CTYPE LC_NUMERIC LC_TIME LC_COLLATE LC_MONETARY LC_MESSAGES
+AcceptEnv LC_PAPER LC_NAME LC_ADDRESS LC_TELEPHONE LC_MEASUREMENT
+AcceptEnv LC_IDENTIFICATION LC_ALL
+
+# @@START_LDE_SSH_CONFIG@@
+# @@END_LDE_SSH_CONFIG@@
+Ciphers aes128-ctr,aes256-ctr,arcfour256,arcfour,aes128-cbc,aes256-cbc
+
+# Match section here is to launch netconf subsystem whenever the netconf interface is unlocked
+# Match and ForceCommand for netconf will be added here
+#match:section:begin:netconf
+#match:section:end:netconf
+
+# Match section here is to launch cli subsystem whenever the cli interface is unlocked
+# Match and ForceCommand for cli will be added here
+#match:section:begin:cli
+#match:section:end:cli

@@ -1,0 +1,10 @@
+#%PAM-1.0
+auth        requisite   pam_nologin.so
+auth        include     common-auth
+auth        [default=1 success=ignore] pam_localuser.so
+auth        required    pam_loginallow.so
+account     requisite   pam_nologin.so
+account     include     common-account
+password    include     common-password
+session     required    pam_loginuid.so
+session     include     common-session

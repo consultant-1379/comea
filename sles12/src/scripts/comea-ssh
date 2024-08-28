@@ -1,0 +1,702 @@
+#!/bin/sh
+##
+## Copyright (c) 2015 Ericsson AB.
+##
+## All Rights Reserved. Reproduction in whole or in part is prohibited
+## without the written consent of the copyright owner.
+##
+## ERICSSON MAKES NO REPRESENTATIONS OR WARRANTIES ABOUT THE
+## SUITABILITY OF THE SOFTWARE, EITHER EXPRESS OR IMPLIED, INCLUDING
+## BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF MERCHANTABILITY,
+## FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT. ERICSSON
+## SHALL NOT BE LIABLE FOR ANY DAMAGES SUFFERED BY LICENSEE AS A
+## RESULT OF USING, MODIFYING OR DISTRIBUTING THIS SOFTWARE OR ITS
+## DERIVATIVES.
+##
+##
+
+# The script is designed to provide a valid oam sshd configuration file based on the inputs(lock/unlock(with port number)).
+# The script updates the sshd_config_oam which is the configuration file for the SSH daemon.
+
+SELF_NAME=`basename $0`
+
+# double-check for comea root folder
+if [ ! -d "${COMEA_ROOT_DIR}" ]; then
+    COMEA_ROOT_DIR="/opt/com/comea"
+fi
+
+# Introduced variable so that during testing this can be set.
+if [ -z "$SSH_SSH_AUTHORIZEDKEYSFILE" ];then
+   SSH_SSH_AUTHORIZEDKEYSFILE="/usr/bin/sss_ssh_authorizedkeys"
+ fi
+
+# Introduced a variable for legal notice so that during testing this can be set.
+if [ -z "$SSH_LEGALNOTICEFILE" ];then
+    SSH_LEGALNOTICEFILE="/usr/share/ericsson/cba/legal-notice"
+fi
+
+# Introduced a variable for privacy and legal notice so that during testing this can be set.
+if [ -z "$SSH_LEGAL_PRIVACYNOTICEFILE" ];then
+    SSH_LEGAL_PRIVACYNOTICEFILE="/usr/share/ericsson/cba/legal-privacy-notice"
+fi
+
+COM_RUN_DIR="/opt/com/run"
+COM_SSHD_CONF="${COM_RUN_DIR}/sshd_config_oam"
+
+if [ ! -f "${COM_SSHD_CONF}" ]; then
+    COMEA_CONF_DIR="/home/com"
+    COM_SSHD_CONF="${COMEA_CONF_DIR}/etc/sshd/sshd_config_oam"
+    if [ ! -e "${COM_SSHD_CONF}" ]; then
+        COMEA_CONF_DIR="${COMEA_ROOT_DIR}"
+        COM_SSHD_CONF="${COMEA_CONF_DIR}/etc/sshd_config_oam"
+    fi
+fi
+
+COMEA_CONF_DIR=`${COMEA_ROOT_DIR}/bin/comea pso config`
+COM_SSHD_CFG="${COMEA_CONF_DIR}/lib/comp/libcom_sshd_manager.cfg"
+
+# Enabling debug logs to syslog 0=disabled , 1=enabled (error logs will
+# always be written to syslog).
+DO_SYSLOG=0
+
+usage() {
+        cat <<_usage_
+usage: ${SELF_NAME} [options]
+
+Options:
+
+ [netconfssh|clissh] unlock port <port-number>  Enable the [netconfssh|clissh] subsystem and port information
+ [netconfssh|clissh] lock                       Disable the [netconfssh|clissh] subsystem information
+ [netconfssh|clissh] unlock port <port-number> users <user-name-list>  Enable the [netconfssh|clissh] user name
+ [ssh] --ciphers <value>                        Configure "Ciphers" in COM Managed SSHD conf file
+ [ssh] --kexAlgorithms <value>                  Configure "Key Exchange Algorithms" in COM Managed SSHD conf file
+ [ssh] --macs <value>                           Configure "MACs" in COM Managed SSHD conf file
+ [ssh] --ipQos <value>                          Configure "IPQoS" in COM Managed SSHD conf file
+ [ssh] --removeIpQoS                            Remove "IPQoS" configuration from COM Managed SSHD conf file
+ [ssh] --renegotiationTime                      Configure "ReKeyLimit" in COM Managed SSHD conf file
+ [ssh] --allowTcpForwarding <value>             Configure "AllowTcpForwarding" in COM Managed SSHD conf file
+ [ssh] --maxStartups <value>                    Configure "MaxStartups" in COM Managed SSHD conf file
+ [ssh] --clientAliveInterval <value>            Configure "ClientAliveInterval" in COM Managed SSHD conf file
+ [ssh] --clientAliveCountMax <value>            Configure "ClientAliveCountMax" in COM Managed SSHD conf file
+
+_usage_
+}
+
+error() {
+    trap - INT TERM EXIT
+    echo "$SELF_NAME error: $1" >&2
+    logger "[ERROR ${SELF_NAME}] $1"
+}
+
+# This function logs debug messages to syslog if DO_SYSLOG flag is
+# enabled.
+syslog_debug_message() {
+    if [ $DO_SYSLOG -eq 1 ]; then
+        logger -p local0.debug -t "`basename $0`[$$]" "$*"
+    fi
+}
+
+# This function logs error messages to syslog and stderr.
+syslog_error_message() {
+    echo "ER $*" >&2
+    logger -p local0.err -t "`basename $0`[$$]" "$*"
+}
+
+syslog_info_message() {
+    logger "[INFO ${SELF_NAME}] $1"
+}
+
+function get_pid(){
+   # 'ps' instead of 'pidof' command is used so that it returns only sshd oam process id and null when sshd oam is down
+   pid=`ps auxwww | grep "\d*.*/usr/sbin/sshd\s\-D\s\-f $COM_SSHD_CONF" | awk '{print $2}'`
+   #Set default value to 0 so the variable will always be set, but it will be 0 if the process is not started
+   echo ${pid:-0}
+}
+
+# This function will add port numbers and subsystem for the cli/netconf interfaces
+# from the oam sshd component cfg file
+unlock() {
+    noOfVar=$#
+    nbiType=$1
+
+    netconf_force_command="ForceCommand /opt/com/bin/com_subsystem_wrapper netconf "
+    cli_force_command="ForceCommand /opt/com/bin/com_subsystem_wrapper cliss "
+    netconf_subsystem_command="Subsystem netconf /opt/com/bin/com_subsystem_wrapper netconf "
+    cli_subsystem_command="Subsystem cli /opt/com/bin/com_subsystem_wrapper cliss "
+
+    if [ $noOfVar -eq 2 ]; then
+        error "argument must be specified"
+        echo "usage: comea netconfssh/clissh unlock port <portNumber>"
+        exit 1
+    fi
+
+    while [ $noOfVar -ge 3 ]; do
+    case $3 in
+        "network")
+        ;;
+        "port")
+        PORT=$4
+        Match_cmd="Match LocalPort $PORT"
+        TMPFILE="`mktemp`"
+        strConcat=0
+        userList=""
+        for i in "$@"; do
+          if ([ "$i" == "users" ] && [ "$strConcat" == 0 ]);then
+              strConcat=1
+          elif [ "$strConcat" == 1 ];then
+              userList+=" ${i}"
+          fi
+        done
+        addUser_command="AllowUsers$userList"
+        if [ -z $PORT ]; then
+            error "Port Number not specified"
+            exit 1
+        else
+            if [[ "${nbiType}" = "netconfssh" ]];then
+                netconf_port_start="#netconf:port:begin"
+                netconf_port_end="#netconf:port:end"
+                netconf_subsystem_start="#netconf:subsystem:begin"
+                netconf_subsystem_end="#netconf:subsystem:end"
+                netconf_match_start="#match:section:begin:netconf"
+                netconf_match_end="#match:section:end:netconf"
+                netconf_port_exist=`sed -e '/#netconf:port:begin/,/#netconf:port:end/!d' $COM_SSHD_CONF`
+                netconf_old_port=`echo $netconf_port_exist | sed 's/[^0-9]*//g'`
+                #Match Section
+                netconf_match="Match LocalPort $PORT"
+                #Modify the port, subsystem and match sections only, when the new port given is not the same as old one
+                if [[ "${netconf_old_port}" != "${PORT}" ]]; then
+                    #PORT Section
+                    netconf_port="Port $PORT"
+                    SED_COMMAND_PORT="/^${netconf_port_start}$/,/^${netconf_port_end}$/c ${netconf_port_start}\n${netconf_port}\n${netconf_port_end}"
+                    sed -i "$SED_COMMAND_PORT" $COM_SSHD_CONF
+                    #Subsystem section
+                    SED_COMMAND_SUBSYSTEM="/^${netconf_subsystem_start}$/,/^${netconf_subsystem_end}$/c ${netconf_subsystem_start}\n${netconf_subsystem_command}${PORT}\n${netconf_subsystem_end}"
+                    sed -i "$SED_COMMAND_SUBSYSTEM" $COM_SSHD_CONF
+                    SED_COMMAND_MATCH="/^${netconf_match_start}$/,/^${netconf_match_end}$/c ${netconf_match_start}\n${netconf_match}\n\t${netconf_force_command}${PORT}\n${netconf_match_end}"
+                    sed -i "$SED_COMMAND_MATCH" $COM_SSHD_CONF
+                fi
+                if [ ! -z "$userList" ]; then
+                    SED_COMMAND_ALLOWUSERS="/^${netconf_match_start}$/,/^${netconf_match_end}$/c ${netconf_match_start}\n${netconf_match}\n\t${netconf_force_command}${PORT}\n\t${addUser_command}\n${netconf_match_end}"
+                    sed -i "$SED_COMMAND_ALLOWUSERS" $COM_SSHD_CONF
+                else
+                    SED_COMMAND_ALLOWUSERS="/^${netconf_match_start}$/,/^${netconf_match_end}$/c ${netconf_match_start}\n${netconf_match}\n\t${netconf_force_command}${PORT}\n${netconf_match_end}"
+                    sed -i "$SED_COMMAND_ALLOWUSERS" $COM_SSHD_CONF
+                fi
+                break
+             elif [[ "${nbiType}" = "clissh" ]];then
+                cli_port_start="#cli:port:begin"
+                cli_port_end="#cli:port:end"
+                cli_subsystem_start="#cli:subsystem:begin"
+                cli_subsystem_end="#cli:subsystem:end"
+                cli_match_start="#match:section:begin:cli"
+                cli_match_end="#match:section:end:cli"
+                cli_port_exist=`sed -e '/#cli:port:begin/,/#cli:port:end/!d' $COM_SSHD_CONF`
+                cli_old_port=`echo $cli_port_exist | sed 's/[^0-9]*//g'`
+                #Match Section
+                cli_match="Match LocalPort $PORT"
+                #Modify the port section when the new port given is not the same as old one
+                if [[ "${cli_old_port}" != "${PORT}" ]]; then
+                    #PORT Section
+                    cli_port="Port $PORT"
+                    SED_COMMAND_PORT="/^${cli_port_start}$/,/^${cli_port_end}$/c ${cli_port_start}\n${cli_port}\n${cli_port_end}"
+                    sed -i "$SED_COMMAND_PORT" $COM_SSHD_CONF
+                    #Subsystem section
+                    SED_COMMAND_SUBSYSTEM="/^${cli_subsystem_start}$/,/^${cli_subsystem_end}$/c ${cli_subsystem_start}\n${cli_subsystem_command}${PORT}\n${cli_subsystem_end}"
+                    sed -i "$SED_COMMAND_SUBSYSTEM" $COM_SSHD_CONF
+                    SED_COMMAND_MATCH="/^${cli_match_start}$/,/^${cli_match_end}$/c ${cli_match_start}\n${cli_match}\n\t${cli_force_command}${PORT}\n${cli_match_end}"
+                    sed -i "$SED_COMMAND_MATCH" $COM_SSHD_CONF
+                fi
+                if [ ! -z "$userList" ]; then
+                    SED_COMMAND_ALLOWUSERS="/^${cli_match_start}$/,/^${cli_match_end}$/c ${cli_match_start}\n${cli_match}\n\t${cli_force_command}${PORT}\n\t${addUser_command}\n${cli_match_end}"
+                    sed -i "$SED_COMMAND_ALLOWUSERS" $COM_SSHD_CONF
+                else
+                    SED_COMMAND_ALLOWUSERS="/^${cli_match_start}$/,/^${cli_match_end}$/c ${cli_match_start}\n${cli_match}\n\t${cli_force_command}${PORT}\n${cli_match_end}"
+                    sed -i "$SED_COMMAND_ALLOWUSERS" $COM_SSHD_CONF
+                fi
+                break
+              else
+                echo "invalid nbiType given"
+                exit 1
+              fi
+        fi
+
+		# args shouldn't be matched against operations
+		noOfVar=`expr $noOfVar - 1`
+		shift
+		;;
+		*)
+		error "unknown argument"
+		echo $3
+		exit 1
+		;;
+	esac
+	noOfVar=`expr $noOfVar - 1`
+	shift
+	done
+
+    configurePubKey
+    configureBanner
+    modifylistenaddress
+}
+
+# This function will remove the port numbers and information under match section for the cli/netconf interfaces
+# from the oam sshd component cfg file
+lock() {
+    nbiType=$1
+    # Delete Ports and any rows/content under Match section
+    if [[ $nbiType = "netconfssh" ]];then
+        #Port section
+        netconf_port_start="#netconf:port:begin"
+        netconf_port_end="#netconf:port:end"
+        SED_COMMAND_PORT="/${netconf_port_start}/,/${netconf_port_end}/ c ${netconf_port_start}\n${netconf_port_end}"
+        sed -i "$SED_COMMAND_PORT" $COM_SSHD_CONF
+        #Subsystem section
+        netconf_subsystem_start="#netconf:subsystem:begin"
+        netconf_subsystem_end="#netconf:subsystem:end"
+        SED_COMMAND_SUBSYSTEM="/${netconf_subsystem_start}/,/${netconf_subsystem_end}/ c ${netconf_subsystem_start}\n${netconf_subsystem_end}"
+        sed -i "$SED_COMMAND_SUBSYSTEM" $COM_SSHD_CONF
+        #Match section
+        netconf_match_start="#match:section:begin:netconf"
+        netconf_match_end="#match:section:end:netconf"
+        SED_COMMAND_MATCH="/${netconf_match_start}/,/${netconf_match_end}/ c ${netconf_match_start}\n${netconf_match_end}"
+        sed -i "$SED_COMMAND_MATCH" $COM_SSHD_CONF
+        killall -9 -q "/opt/com/bin/netconf"
+     elif [[ $nbiType = "clissh" ]];then
+        #Port section
+        cli_port_start="#cli:port:begin"
+        cli_port_end="#cli:port:end"
+        SED_COMMAND_PORT="/${cli_port_start}/,/${cli_port_end}/ c ${cli_port_start}\n${cli_port_end}"
+        sed -i "$SED_COMMAND_PORT" $COM_SSHD_CONF
+        #Subsystem section
+        cli_subsystem_start="#cli:subsystem:begin"
+        cli_subsystem_end="#cli:subsystem:end"
+        SED_COMMAND_SUBSYSTEM="/${cli_subsystem_start}/,/${cli_subsystem_end}/ c ${cli_subsystem_start}\n${cli_subsystem_end}"
+        sed -i "$SED_COMMAND_SUBSYSTEM" $COM_SSHD_CONF
+        #Match section
+        cli_match_start="#match:section:begin:cli"
+        cli_match_end="#match:section:end:cli"
+        SED_COMMAND_MATCH="/${cli_match_start}/,/${cli_match_end}/ c ${cli_match_start}\n${cli_match_end}"
+        sed -i "$SED_COMMAND_MATCH" $COM_SSHD_CONF
+        killall -9 -q "/opt/com/bin/cliss"
+     fi
+
+     modifylistenaddress
+}
+
+# This function will modify the information under listen address section
+# based on whether either or both cli/netconf interfaces get locked/unlocked
+modifylistenaddress() {
+     netconf_port_exist=`sed -e '/#netconf:port:begin/,/#netconf:port:end/!d' $COM_SSHD_CONF`
+     netconf_port=`echo $netconf_port_exist | sed 's/[^0-9]*//g'`
+     cli_port_exist=`sed -e '/#cli:port:begin/,/#cli:port:end/!d' $COM_SSHD_CONF`
+     cli_port=`echo $cli_port_exist | sed 's/[^0-9]*//g'`
+
+     listen_address_begin="#listen:address:begin"
+     listen_address_end="#listen:address:end"
+     netconfPort=`grep -nr netconfPort $COM_SSHD_CFG | sed -re 's/<\/?\w+>//g'`
+     netconfPort=`echo $netconfPort | cut -d" " -f2`
+
+     if [[ -z "${cli_port}" ]] && [[ -z "${netconf_port}" ]]; then
+        # Enable the ListenAddress when both(cli/netconf) ports are
+        # removed
+        listen_address_command="ListenAddress 127.0.0.1:$netconfPort"
+        SED_COMMAND_LISTEN_ADDRESS="/${listen_address_begin}/,/${listen_address_end}/ c ${listen_address_begin}\n${listen_address_command}\n${listen_address_end}"
+        sed -i "$SED_COMMAND_LISTEN_ADDRESS" $COM_SSHD_CONF
+     elif [[ ! -z "${cli_port}" ]] || [[ ! -z "${netconf_port}" ]]; then
+        # Disable the ListenAddress if any of the ports(cli/netconf) enabled, also uncomment the section only if its not already one
+        listen_address_command="#ListenAddress 127.0.0.1:$netconfPort"
+        listen_address_flag=`grep "ListenAddress" $COM_SSHD_CONF | grep ^#`
+        listen_address_flag=`echo $?`
+        if [[ "$listen_address_flag" -ne 0 ]];then
+           SED_COMMAND_LISTEN_ADDRESS="/${listen_address_begin}/,/${listen_address_end}/ c ${listen_address_begin}\n${listen_address_command}\n${listen_address_end}"
+           sed -i "$SED_COMMAND_LISTEN_ADDRESS" $COM_SSHD_CONF
+        fi
+     fi
+}
+
+# This function will reload the oam sshd once the cli or netconf
+# interfaces will get locked or unlocked
+reload() {
+     SSHD_PID=$(get_pid)
+     if [ ${SSHD_PID} != 0 ]; then
+	kill -HUP $SSHD_PID
+	exit 0
+     else
+        syslog_debug_message "COM OAM SSHD instance is not running, can not reload"
+        exit 0
+     fi;
+}
+
+# This function will configure oam sshd config file with PublicKeyAuthentication support.
+# Pre-condition: /usr/bin/sss_ssh_authorizedkeys must exist on the system.
+# Otherwise the support for publickey authentication is not added.
+configurePubKey() {
+PUBKEY_STR="PubkeyAuthentication"
+STRING_POS="PasswordAuthentication no"
+if [ -f "${SSH_SSH_AUTHORIZEDKEYSFILE}" ]; then
+        # Ensure the lines are not already present
+        grep -q "$PUBKEY_STR" $COM_SSHD_CONF
+        if [ $? != 0 ]; then
+            # The PubKey support is not present in the config file.
+             PUBKEY_SUPPORT="\#Enable Public Key Authentication\nPubkeyAuthentication yes\nAuthorizedKeysCommand \/usr\/bin\/sss_ssh_authorizedkeys\nAuthorizedKeysCommandUser nobody"
+             sed -i "/${STRING_POS}/a${PUBKEY_SUPPORT}" $COM_SSHD_CONF
+        fi
+  else
+     grep -q "$PUBKEY_STR" $COM_SSHD_CONF
+        if [ $? != 0 ]; then
+          #Log the information
+          syslog_info_message "File not found '/usr/bin/sss_ssh_authorizedkeys' and publickey authentication support not configured"
+        else
+          # Remove if Publickey Authentication already exists in sshd_oam_config file.
+          sed -i "/${STRING_POS}/{n;N;N;N;d}" $COM_SSHD_CONF
+        fi
+fi
+}
+
+# This function will configure sshd_oam_config file with the Banner configured by user.
+# SEC provided API "/usr/share/ericsson/cba/legal_notice" file contains the address of the
+# file containing the actual legal notice message.
+# Pre-condition: SEC provided API "/usr/share/ericsson/cba/legal_notice" must exist on the system.
+# Otherwise the support for configuration of legal notice message is not added.
+configureLegalNotice() {
+    # Check if Banner already exists in sshd_oam_config file.
+    grep -q "^$BANNER_STR" $COM_SSHD_CONF
+    if [ $? != 0 ]; then
+        sed -i "/^UsePAM/a $BANNER_LEGAL_SUPPORT\n$BANNER_STR $SSH_LEGALNOTICEFILE" $COM_SSHD_CONF
+    else
+        grep -q "^$BANNER_LEGAL_PRIVACY_SUPPORT" $COM_SSHD_CONF
+        if [ $? -eq 0 ]; then
+            sed -i "/^${BANNER_STR}/d" $COM_SSHD_CONF
+            sed -i "/${BANNER_LEGAL_PRIVACY_SUPPORT}/d" $COM_SSHD_CONF
+            sed -i "/^UsePAM/a $BANNER_LEGAL_SUPPORT\n$BANNER_STR $SSH_LEGALNOTICEFILE" $COM_SSHD_CONF
+            syslog_info_message "Updating Banner with legal notice API (i.e $SSH_LEGALNOTICEFILE)"
+        fi
+    fi
+}
+
+# This function will configure sshd_oam_config file with the Banner configured by user.
+# SEC provided API "/usr/share/ericsson/cba/legal-privacy-notice" file contains the address of the
+# file containing the actual legal and privacy notice message.
+# Pre-condition: SEC provided API "/usr/share/ericsson/cba/legal-privacy-notice" must exist on the system.
+# Otherwise the support for configuration of privacy and legal notice message is not added.
+configureLegalPrivacyNotice() {
+    # Check if Banner exists already in sshd_oam_config file.
+    grep -q "^$BANNER_STR" $COM_SSHD_CONF
+    if [ $? != 0 ]; then
+        sed -i "/^UsePAM/a $BANNER_LEGAL_PRIVACY_SUPPORT\n$BANNER_STR $SSH_LEGAL_PRIVACYNOTICEFILE" $COM_SSHD_CONF
+    else
+        grep -q "^$BANNER_LEGAL_SUPPORT" $COM_SSHD_CONF
+        if [ $? -eq 0 ]; then
+            sed -i "/^${BANNER_STR}/d" $COM_SSHD_CONF
+            sed -i "/${BANNER_LEGAL_SUPPORT}/d" $COM_SSHD_CONF
+            sed -i "/^UsePAM/a $BANNER_LEGAL_PRIVACY_SUPPORT\n$BANNER_STR $SSH_LEGAL_PRIVACYNOTICEFILE" $COM_SSHD_CONF
+            syslog_info_message "Updating Banner with legal and privacy notice API (i.e $SSH_LEGAL_PRIVACYNOTICEFILE)"
+        fi
+    fi
+}
+
+removeBannerIfExists() {
+    grep -q "^$BANNER_STR" $COM_SSHD_CONF
+    if [ $? -eq 0 ]; then
+        sed -i "/^${BANNER_STR}/d" $COM_SSHD_CONF
+        grep -q "^$BANNER_LEGAL_SUPPORT" $COM_SSHD_CONF
+        if [ $? -eq 0 ]; then
+            sed -i "/${BANNER_LEGAL_SUPPORT}/d" $COM_SSHD_CONF
+        else
+            sed -i "/${BANNER_LEGAL_PRIVACY_SUPPORT}/d" $COM_SSHD_CONF
+        fi
+    fi
+    syslog_info_message "Legal(i.e $SSH_LEGALNOTICEFILE) or legal-privacy notice (i.e $SSH_LEGAL_PRIVACYNOTICEFILE) API not found. Displaying Configured legal notice or legal-privacy notice message for OAM SSH is not supported."
+}
+
+configureBanner() {
+    BANNER_STR="Banner"
+    BANNER_LEGAL_SUPPORT="# This section here is to set configured legal notice message for its login services."
+    BANNER_LEGAL_PRIVACY_SUPPORT="# This section here is to set configured legal and privacy notice message for its login services."
+    if [ -L "$SSH_LEGAL_PRIVACYNOTICEFILE" ]; then
+        configureLegalPrivacyNotice
+    elif [ -f "$SSH_LEGALNOTICEFILE" ]; then
+        configureLegalNotice
+    else
+        removeBannerIfExists
+    fi
+}
+
+# This function will configure oam sshd config file with the Ciphers configured by user.
+update_ciphers() {
+    NEW_CIPHERS="Ciphers $1"
+    EXISTING_CIPHERS=$(grep -m 1 "^Ciphers" $COM_SSHD_CONF)
+
+    if [ ! -z "$EXISTING_CIPHERS" ]; then
+        SED_COMMAND_CIPHERS="s/$EXISTING_CIPHERS/$NEW_CIPHERS/"
+        sed -i "$SED_COMMAND_CIPHERS" $COM_SSHD_CONF
+    else
+        echo "$NEW_CIPHERS" >> $COM_SSHD_CONF
+    fi
+}
+
+# This function will configure oam sshd config file with the Key Exchange Algorithms configured by user.
+update_kex() {
+    NEW_KEX="KexAlgorithms $1"
+    EXISTING_KEX=$(grep -m 1 "^KexAlgorithms" $COM_SSHD_CONF)
+
+    if [ ! -z "$EXISTING_KEX" ]; then
+        SED_COMMAND_KEX="s/$EXISTING_KEX/$NEW_KEX/"
+        sed -i "$SED_COMMAND_KEX" $COM_SSHD_CONF
+    else
+        EXISTING_CIPHERS=$(grep -m 1 "^Ciphers" $COM_SSHD_CONF)
+        if [ ! -z "$EXISTING_CIPHERS" ]; then
+            SED_COMMAND_KEX="s/$EXISTING_CIPHERS/$EXISTING_CIPHERS\n$NEW_KEX/"
+            sed -i "$SED_COMMAND_KEX" $COM_SSHD_CONF
+        else
+            echo "$NEW_KEX" >> $COM_SSHD_CONF
+        fi
+    fi
+}
+
+# This function will configure oam sshd config file with the MACs configured by user.
+update_macs() {
+    NEW_MACS="MACs $1"
+    EXISTING_MACS=$(grep -m 1 "^MACs" $COM_SSHD_CONF)
+
+    if [ ! -z "$EXISTING_MACS" ]; then
+        SED_COMMAND_MACS="s/$EXISTING_MACS/$NEW_MACS/"
+        sed -i "$SED_COMMAND_MACS" $COM_SSHD_CONF
+    else
+        EXISTING_CIPHERS=$(grep -m 1 "^Ciphers" $COM_SSHD_CONF)
+        if [ ! -z "$EXISTING_CIPHERS" ]; then
+            SED_COMMAND_MACS="s/$EXISTING_CIPHERS/$EXISTING_CIPHERS\n$NEW_MACS/"
+            sed -i "$SED_COMMAND_MACS" $COM_SSHD_CONF
+        else
+            echo "$NEW_MACS" >> $COM_SSHD_CONF
+        fi
+    fi
+}
+
+# This function will configure oam sshd config file with the IPQos (DSCP) as configured by user.
+update_ipqos() {
+    NEW_IPQOS="IPQoS $1"
+    EXISTING_IPQOS=$(grep -m 1 "^IPQoS" $COM_SSHD_CONF)
+
+    if [ ! -z "$EXISTING_IPQOS" ]; then
+        SED_COMMAND_IPQOS="s/$EXISTING_IPQOS/$NEW_IPQOS/"
+        sed -i "$SED_COMMAND_IPQOS" $COM_SSHD_CONF
+    else
+        echo "$NEW_IPQOS" >> $COM_SSHD_CONF
+    fi
+}
+
+# This function will configure oam sshd config file with renegotiationtime in RekeyLimit as configured by user.
+update_renegotiationTime() {
+    RENEGOTIATION_COMMENT="#Time interval for renegotiation of NBI connections over SSH"
+    NEW_RENEGOTIATION_TIME="RekeyLimit default $1s"
+    EXISTING_RENEGOTIATION_TIME=$(grep -m 1 "^RekeyLimit" $COM_SSHD_CONF)
+    if [ ! -z "$EXISTING_RENEGOTIATION_TIME" ]; then
+         if [ "$1" = "none" ] ; then
+              SED_COMMAND_OPTION="/$RENEGOTIATION_COMMENT/,+1d"
+         else
+              SED_COMMAND_OPTION="s/$EXISTING_RENEGOTIATION_TIME/$NEW_RENEGOTIATION_TIME/"
+         fi
+         sed -i "$SED_COMMAND_OPTION" $COM_SSHD_CONF
+    elif [ "$1" != "none" ]; then
+         echo "${RENEGOTIATION_COMMENT}" >> $COM_SSHD_CONF
+         echo "${NEW_RENEGOTIATION_TIME}" >> $COM_SSHD_CONF
+    fi
+}
+
+#This function will configure oam sshd config file with the AllowTcpForwarding configured by user during deployment.
+update_allowTcpForwarding() {
+    EXISTING_ALLOWTCPFORWARDING=$(grep -m 1 "^AllowTcpForwarding" $COM_SSHD_CONF)
+    if [ -z "$EXISTING_ALLOWTCPFORWARDING" ]; then
+        EXISTING_ALLOWTCPFORWARDING=$(grep -m 1 "^#AllowTcpForwarding" $COM_SSHD_CONF)
+    fi
+    CISCAT_ALLOWTCPFORWARDING="AllowTcpForwarding no"
+    DEFAULT_ALLOWTCPFORWARDING="#AllowTcpForwarding no"
+    if [ "$1" = "ENABLED" ]; then
+        sed -i "s/$EXISTING_ALLOWTCPFORWARDING/$DEFAULT_ALLOWTCPFORWARDING/" $COM_SSHD_CONF
+    else
+        sed -i "s/$EXISTING_ALLOWTCPFORWARDING/$CISCAT_ALLOWTCPFORWARDING/" $COM_SSHD_CONF
+    fi
+}
+
+#This function will configure oam sshd config file with the MaxStartUps configured by user during deployment.
+update_maxStartups() {
+    EXISTING_MAXSTARTUPS=$(grep -m 1 "^MaxStartups" $COM_SSHD_CONF)
+    if [ -z "$EXISTING_MAXSTARTUPS" ]; then
+        EXISTING_MAXSTARTUPS=$(grep -m 1 "^#MaxStartups" $COM_SSHD_CONF)
+    fi
+    CISCAT_MAXSTARTUPS="MaxStartups 10:30:60"
+    DEFAULT_MAXSTARTUPS="#MaxStartups 10:30:60"
+    if [ "$1" = "ENABLED" ]; then
+        sed -i "s/$EXISTING_MAXSTARTUPS/$DEFAULT_MAXSTARTUPS/" $COM_SSHD_CONF
+    else
+        sed -i "s/$EXISTING_MAXSTARTUPS/$CISCAT_MAXSTARTUPS/" $COM_SSHD_CONF
+    fi
+}
+
+#This function will configure oam sshd config file with the ClientAliveInterval configured by user during deployment.
+update_clientAliveInterval() {
+    NEW_CLIENTALIVE_INT="ClientAliveInterval $1"
+    EXISTING_CLIENTALIVE_INT=$(grep -m 1 "^ClientAliveInterval" $COM_SSHD_CONF)
+    if [ -z "$EXISTING_CLIENTALIVE_INT" ]; then
+        EXISTING_CLIENTALIVE_INT=$(grep -m 1 "^#ClientAliveInterval" $COM_SSHD_CONF)
+    fi
+
+    DEFAULT_CLIENTALIVE_INT="#ClientAliveInterval 0"
+    if [ ! -z "$EXISTING_CLIENTALIVE_INT" ]; then
+        if [ "$1" = "none" ] ; then
+            SED_COMMAND_CLIENTALIVE_INT="s/$EXISTING_CLIENTALIVE_INT/$DEFAULT_CLIENTALIVE_INT/"
+        else
+            SED_COMMAND_CLIENTALIVE_INT="s/$EXISTING_CLIENTALIVE_INT/$NEW_CLIENTALIVE_INT/"
+        fi
+        sed -i "$SED_COMMAND_CLIENTALIVE_INT" $COM_SSHD_CONF
+    elif [ "$1" != "none" ]; then
+        echo "$NEW_CLIENTALIVE_INT" >> $COM_SSHD_CONF
+    fi
+}
+
+#This function will configure oam sshd config file with the ClientAliveCountMax configured by user during deployment.
+update_clientAliveCountMax() {
+    NEW_CLIENTALIVE_CMAX="ClientAliveCountMax $1"
+    EXISTING_CLIENTALIVE_CMAX=$(grep -m 1 "^ClientAliveCountMax" $COM_SSHD_CONF)
+    if [ -z "$EXISTING_CLIENTALIVE_CMAX" ]; then
+        EXISTING_CLIENTALIVE_CMAX=$(grep -m 1 "^#ClientAliveCountMax" $COM_SSHD_CONF)
+    fi
+
+    DEFAULT_CLIENTALIVE_CMAX="#ClientAliveCountMax 3"
+    if [ ! -z "$EXISTING_CLIENTALIVE_CMAX" ]; then
+        if [ "$1" = "none" ] ; then
+            SED_COMMAND_CLIENTALIVE_CMAX="s/$EXISTING_CLIENTALIVE_CMAX/$DEFAULT_CLIENTALIVE_CMAX/"
+        else
+            SED_COMMAND_CLIENTALIVE_CMAX="s/$EXISTING_CLIENTALIVE_CMAX/$NEW_CLIENTALIVE_CMAX/"
+        fi
+        sed -i "$SED_COMMAND_CLIENTALIVE_CMAX" $COM_SSHD_CONF
+    elif [ "$1" != "none" ]; then
+        echo "$NEW_CLIENTALIVE_CMAX" >> $COM_SSHD_CONF
+    fi
+}
+
+#Removes IPQoS configuration from oam sshd config file
+remove_ipqos() {
+    EXISTING_IPQOS="^IPQoS"
+    sed -i "/$EXISTING_IPQOS/d" $COM_SSHD_CONF
+}
+
+# Main
+# Apply new config
+main() {
+    syslog_debug_message "Command: $*"
+    syslog_debug_message "Enter main()"
+
+    # Save the script arguments
+    ALL_REAL_ARGS="$@"
+
+    # shift away "netconfssh/clissh/ssh"
+    shift
+
+    # Prepare getopt
+    GETOPT=$(which getopt 2>/dev/null)
+    readonly GETOPT="${GETOPT:=/usr/bin/getopt}"
+
+    if [ ! -x "${GETOPT}" ]; then
+        syslog_error_message "missing ${GETOPT} or is not an executable."
+        exit 1
+    fi
+    readonly PROGNAME="${0##*/}"
+
+    lopts='unlock,lock,ciphers:,kexAlgorithms:,macs:,ipQos:,renegotiationTime:,removeIpQoS,allowTcpForwarding:,maxStartups:,clientAliveInterval:,clientAliveCountMax:'
+    args=`${GETOPT} -n "${PROGNAME}" -l ${lopts} "" "$@"`
+    RC=$?
+    if [ $RC -ne 0 ]; then
+        syslog_error_message "Error: getopt failed, rc=$RC"
+        return 1
+    fi
+
+    while true; do
+        case $1 in
+		unlock)
+			unlock $ALL_REAL_ARGS
+			break
+			;;
+		lock)
+			lock $ALL_REAL_ARGS
+			break
+			;;
+		--ciphers)
+			CIPHERS="$(echo "$2" | tr -d "'")"
+			update_ciphers "$CIPHERS"
+			shift 2
+			;;
+		--kexAlgorithms)
+			KEX="$(echo "$2" | tr -d "'")"
+			update_kex "$KEX"
+			shift 2
+			;;
+		--macs)
+			MACS="$(echo "$2" | tr -d "'")"
+			update_macs "$MACS"
+			shift 2
+			;;
+		--ipQos)
+			IPQOS="$(echo "$2" | tr -d "'")"
+			update_ipqos "$IPQOS"
+			shift 2
+			;;
+		--renegotiationTime)
+			RENEGOTIATION_TIME="$(echo "$2" | tr -d "'")"
+			update_renegotiationTime "$RENEGOTIATION_TIME"
+			shift 2
+			;;
+		--removeIpQoS)
+			remove_ipqos
+			shift 1
+			;;
+		--allowTcpForwarding)
+			ALLOW_TCP_FORWARDING="$(echo "$2" | tr -d "'")"
+			update_allowTcpForwarding "$ALLOW_TCP_FORWARDING"
+			shift 2
+			;;
+		--maxStartups)
+			MAX_STARTUPS="$(echo "$2" | tr -d "'")"
+			update_maxStartups "$MAX_STARTUPS"
+			shift 2
+			;;
+		--clientAliveInterval)
+                        CLIENT_ALIVEINT="$(echo "$2" | tr -d "'")"
+                        update_clientAliveInterval "$CLIENT_ALIVEINT"
+                        shift 2
+                        ;;
+		--clientAliveCountMax)
+                        CLIENT_ALIVECMAX="$(echo "$2" | tr -d "'")"
+                        update_clientAliveCountMax "$CLIENT_ALIVECMAX"
+                        shift 2
+                        ;;
+		--)
+	                # End of parameter list
+			break
+			;;
+		"")
+			break
+			;;
+		*)
+			error "unknown command"
+			exit 1
+			;;
+	esac
+    done
+
+    reload
+    syslog_debug_message "Exit main()"
+}
+
+# Exit if sub command is not specified
+if [ $# -le 1 ]; then
+    error "sub-command must be specified"
+    usage
+    exit 1
+fi
+
+main "$@"
+
+# Exit with the status of the last command
+exit

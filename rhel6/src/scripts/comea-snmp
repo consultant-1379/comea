@@ -1,0 +1,656 @@
+#!/bin/sh
+##
+## Copyright (c) 2011Ericsson AB, 2009 - 2010.
+##
+## All Rights Reserved. Reproduction in whole or in part is prohibited
+## without the written consent of the copyright owner.
+##
+## ERICSSON MAKES NO REPRESENTATIONS OR WARRANTIES ABOUT THE
+## SUITABILITY OF THE SOFTWARE, EITHER EXPRESS OR IMPLIED, INCLUDING
+## BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF MERCHANTABILITY,
+## FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT. ERICSSON
+## SHALL NOT BE LIABLE FOR ANY DAMAGES SUFFERED BY LICENSEE AS A
+## RESULT OF USING, MODIFYING OR DISTRIBUTING THIS SOFTWARE OR ITS
+## DERIVATIVES.
+##
+##
+
+# The script is designed to work in a limited linux environment where the support of certain utilities
+# like for instance ps and pgrep varies.
+# This is a bourne shell script and is free from any non compatible syntax (e.g bash specific features)
+
+SELF_NAME=`basename $0`
+
+# logger command will be invoked with '-t' option to avoid slow execution in case LDAP
+# server is not reachable. Using "logger" as tag to maintain backward compatibility
+TAG="logger"
+
+unset LD_PRELOAD
+
+# double-check for comea root folder
+if [ ! -d "${COMEA_ROOT_DIR}" ]; then
+    COMEA_ROOT_DIR="/opt/com/comea"
+fi
+
+COM_RUN_DIR="/opt/com/run"
+SNMPD_CONF="${COM_RUN_DIR}/snmpd.conf"
+
+if [ ! -f "${SNMPD_CONF}" ]; then
+    COMEA_CONF_DIR="/home/com/etc/snmp"
+    SNMPD_CONF="${COMEA_CONF_DIR}/snmpd.conf"
+    if [ ! -e "${SNMPD_CONF}" ]; then
+        COMEA_CONF_DIR="${COMEA_ROOT_DIR}/etc"
+        SNMPD_CONF="${COMEA_CONF_DIR}/snmpd.conf"
+    fi
+else
+    COMEA_CONF_DIR="`dirname ${SNMPD_CONF}`"
+fi
+
+if [ -z "${SNMPCONFPATH}" ]; then
+  # Certificates exist under tls/certs/*.crt && tls/private/*.key
+  COMEA_NOBACKUP_DIR=`${COMEA_ROOT_DIR}/bin/comea pso no-backup`
+  if [ $? -eq 0 ] && [ -e "${COMEA_NOBACKUP_DIR}" ]; then
+    SNMPCONFPATH="${COMEA_CONF_DIR}:${COMEA_NOBACKUP_DIR}/etc/snmp/:${COMEA_ROOT_DIR}/etc/snmp/" export SNMPCONFPATH
+  else
+    SNMPCONFPATH="${COMEA_CONF_DIR}:${COMEA_ROOT_DIR}/etc/snmp/" export SNMPCONFPATH
+  fi
+fi
+
+# set get cmd depending on env
+if [ ! -d "${NETSNMP_ROOT}" ]; then
+    NETSNMP_ROOT="/usr"
+else
+    if [ -d "${NETSNMP_ROOT}/lib64" ]; then
+        LD_LIBRARY_PATH="${NETSNMP_ROOT}/lib64:$LD_LIBRARY_PATH" export LD_LIBRARY_PATH
+    elif [ -d "${NETSNMP_ROOT}/lib" ]; then
+        LD_LIBRARY_PATH="${NETSNMP_ROOT}/lib:$LD_LIBRARY_PATH" export LD_LIBRARY_PATH
+    fi
+fi
+SNMP_GET_CMD="${NETSNMP_ROOT}/bin/snmpget"
+SNMPD_CMD="${NETSNMP_ROOT}/sbin/snmpd"
+
+# Net-snmp version where the Byte order bug is fixed
+SNMP_IPV6_FIX_VERSION="5.7.3"
+
+# Net-snmp version from where the exactEngineID is supported
+SNMP_ENGINEID_SUPPORT_VERSION="5.5.0"
+
+# set output flag to true if not testing
+if [ "${COMEA_MSG_OUT}" != "false" ]; then
+    COMEA_MSG_OUT="true"
+fi
+
+# set COMEA_SNMP_RUN_DIR env variable to control
+# where runtime data is written.
+# controls the location for agentx socket, pid file and password file.
+if [ -d "${COMEA_SNMP_RUN_DIR}"  ]; then
+   RUN_DIR="${COMEA_SNMP_RUN_DIR}"
+else
+   RUN_DIR="${COMEA_ROOT_DIR}/run"
+fi
+SNMPD_PID_FILE="${RUN_DIR}/snmpd.pid"
+SNMPD_PWDF="${RUN_DIR}/snmpPwdFile"
+SNMPD_ENGINEIDF="${RUN_DIR}/snmpEngineIdFile"
+SNMPD_AGENTX="${RUN_DIR}/agentx-socket"
+
+# Fetch the persistant location to backup the runtime snmpd.conf and use it
+# during switchover to maintain consistancy in engineBootscount - HZ19571
+SNMP_BACKUP_CONF=`${COMEA_ROOT_DIR}/bin/comea pso config`
+if [ $? -ne 0 ]; then
+   SNMP_BACKUP_CONF="/home/com/"
+fi
+
+SNMPD_PWDF_FILE_PERSISTENT="${SNMP_BACKUP_CONF}/run/snmpPwdFile"
+SNMPD_ENGINEIDF_FILE_PERSISTENT="${SNMP_BACKUP_CONF}/run/snmpEngineIdFile"
+SNMPD_CONF_RUN_PERSISTENT="${SNMP_BACKUP_CONF}/run/snmpd.conf"
+SNMPD_CONF_PERSISTENT="${SNMP_BACKUP_CONF}/etc/snmp/snmpd.conf"
+
+
+TMP_COMMUNITY_STR="${COMEA_ROOT_DIR}/txt"
+SNMPD_LOGGING="-LS5d"
+
+SNMP_PERSISTENT_DIR=${COMEA_ROOT_DIR}/run export SNMP_PERSISTENT_DIR
+
+error() {
+    trap - INT TERM EXIT
+    echo "$SELF_NAME error: $1" >&2
+    logger -t $TAG "[ERROR ${SELF_NAME}] $1"
+}
+
+test -x "$SNMPD_CMD" || (error "snmp is not installed" && exit 1)
+test -x "$SNMP_GET_CMD" || (error "snmp is not installed" && exit 1)
+
+set_agentxsocket() {
+    sed -i -e 's:\(agentxsocket \).*\($\):\1'${SNMPD_AGENTX}'\2:' \
+        $SNMPD_CONF
+}
+
+generate_new_pwd() {
+    # Delete previous snmpPwdFile if exists
+    if [ -e "$SNMPD_PWDF" ]; then
+        rm -rf $SNMPD_PWDF
+    fi
+    # generate random password and redirect it to snmpPwdFile
+    PASSWD="`dd if=/dev/urandom bs=1 count=32 | md5sum | tr -d [:space:]-`"
+    echo "$PASSWD" > $SNMPD_PWDF
+
+    # update snmpd configuration file as well
+    sed -i "s/\(createUser[ ]*com_[^ ]*[ ]*[^ ]*[ ]*\)[0-9a-zA-Z]*\([ ]*[^ ]*\)/\1$PASSWD\2/" \
+        $SNMPD_CONF
+}
+
+configure_engineid() {
+    BEGIN="#engineID:config:begin"
+    END="#engineID:config:end"
+    NEW_ENGINEID="`cat $SNMPD_ENGINEIDF`"
+
+    if [ -z $NEW_ENGINEID ]; then
+        sed -i "/$BEGIN/,/$END/ c$BEGIN\n$END" $SNMPD_CONF
+        generate_new_pwd
+        return 0
+    else
+        OLD_ENGINEID="`sed -n 's:.*exactEngineID \(.*\).*:\1:p' $SNMPD_CONF`"
+        if [ "$NEW_ENGINEID" == "$OLD_ENGINEID" ]; then
+            return 1
+        else
+            # Update the new engineID
+            sed -i "/$BEGIN/,/$END/ c$BEGIN\nexactEngineID $NEW_ENGINEID\n$END" $SNMPD_CONF
+            generate_new_pwd
+            return 0
+        fi
+    fi
+
+}
+
+is_pid_snmpd(){
+    # unfortunately /proc/<pid>/comm cant be used as that was
+    # introduced in linux 2.6.33
+    # instead check for comm in /proc/<pid>/stat
+    if grep snmpd /proc/$1/stat; then
+        return 0
+    fi
+    return 1
+}
+
+is_pid_running() {
+    # if the pid file exist
+    if [ -f "$SNMPD_PID_FILE" ]; then
+        pid=`cat $SNMPD_PID_FILE`
+        if is_pid_snmpd $pid; then
+            return 0
+        fi
+        rm -f "$SNMPD_PID_FILE"
+    fi
+    return 1
+}
+
+waitPid(){
+    PID_l=$1
+    COUNT=20
+    while [ $COUNT -gt 0 ]; do
+        if /bin/kill -0 $PID_l > /dev/null 2>&1
+        then
+            usleep 100000
+            COUNT=`expr $COUNT - 1`
+        else
+            break
+        fi
+    done
+}
+
+get_snmp_pids() {
+    res=""
+    pids=$(ps haxocomm,pid | awk '$1==pname{print $2}' pname=snmpd)
+    for pid in ${pids}
+    do
+        grep ${SNMPD_CONF} /proc/${pid}/cmdline > /dev/null && res="${pid} ${res}"
+    done
+    echo ${res}
+}
+
+stop() {
+    # no pid file => not running
+    if [ -f "$SNMPD_PID_FILE" ]; then
+        SNMPD_PID=`cat $SNMPD_PID_FILE`
+        if is_pid_snmpd $SNMPD_PID; then
+            # send terminate signal by default 
+            # Fix for TR HP97091 to also work on LDE/redhat. (Not tested on all redhat distributions)
+            if [ -f /etc/redhat-release ]; then
+                # source function library
+                . /etc/init.d/functions
+                killproc -p $SNMPD_PID_FILE $SNMPD_CMD
+            elif [ -x /sbin/start-stop-daemon ]; then
+                start-stop-daemon --quiet --stop --oknodo --pidfile $SNMPD_PID_FILE --exec $SNMPD_CMD
+            else
+                /bin/kill -15 $SNMPD_PID
+            fi
+    
+            # wait for process to stop
+            waitPid $SNMPD_PID
+    
+            # if still alive try to kill
+            if is_pid_running ; then
+                /bin/kill -9 $SNMPD_PID || true
+            fi
+        else
+            rm -f "$SNMPD_PID_FILE"
+        fi
+    fi
+
+    # double-check for pids with the same config file
+    ALL_SNMPD_PIDS=`get_snmp_pids`
+    if [ ! -z "${ALL_SNMPD_PIDS}" ]; then
+        if [ ! -f "$SNMPD_PID_FILE" ]; then
+            PID_l=`echo "${ALL_SNMPD_PIDS}" | cut -d' ' -f 1`
+            echo "$PID_l" > $SNMPD_PID_FILE
+        fi
+        /bin/kill -9 `echo ${ALL_SNMPD_PIDS}` || true
+    fi
+    # triple-check and clean-up
+    usleep 100000
+    is_pid_running
+    if [ $? -ne 0 ]; then
+        if [ -f "$SNMPD_PID_FILE" ]; then
+            rm -rf $SNMPD_PID_FILE
+        fi
+        if [ -e "$SNMPD_AGENTX" ]; then
+            rm -rf $SNMPD_AGENTX
+        fi
+        return 0
+    fi
+    # even if after kill pid is running, report an error
+    error "failed to stop snmp daemon, still running on pid $PID_l"
+    return 1
+}
+
+start() {
+    trap forcestop INT TERM EXIT
+    # clean-up just in case
+    stop
+    # Set agentx socket and engineId
+    set_agentxsocket
+    configure_engineid
+    local is_persistant=$?
+
+    # Check COM_USER_MODE env to run with non-root
+    if [ "${COM_USER_MODE}" = "1" ]; then
+        USER_OPT=" -u com-core "
+        GROUP_OPT=" -g com-core "
+        chgrp com-core $SNMPD_PWDF
+
+        if [ -d "$COMEA_ROOT_DIR/run/mib_indexes" ]; then
+            chgrp com-core $COMEA_ROOT_DIR/run/mib_indexes
+        fi
+    fi
+
+    # Fix for TR HP97091 to also work on LDE/redhat. (Not tested on all redhat distributions)
+    SNMPD_OPTIONS=" $USER_OPT $GROUP_OPT -C -c $SNMPD_CONF $SNMPD_LOGGING -p $SNMPD_PID_FILE"
+    if [ $is_persistant -eq 1 ] ; then
+        SNMPD_OPTIONS=" $USER_OPT $GROUP_OPT -C -c $SNMPD_CONF,$SNMP_PERSISTENT_DIR/snmpd.conf $SNMPD_LOGGING -p $SNMPD_PID_FILE"
+    fi
+    if [ -f /etc/redhat-release ]; then
+        # source function library
+        . /etc/init.d/functions
+        daemon --pidfile $SNMPD_PID_FILE $SNMPD_CMD $SNMPD_OPTIONS
+    elif [ -x /sbin/start-stop-daemon ]; then
+        start-stop-daemon --quiet --start --oknodo --pidfile $SNMPD_PID_FILE \
+            --exec $SNMPD_CMD -- $SNMPD_OPTIONS
+    else
+        $SNMPD_CMD $SNMPD_OPTIONS &
+    fi
+
+    # wait until process has started
+    COUNT=100
+    while [ $COUNT -gt 0 ]
+    do
+        if is_pid_running; then
+            break
+        fi
+        usleep 100000
+        COUNT=`expr $COUNT - 1`
+    done
+
+    # Backup snmp runtime configuration in a persistent location
+    # to sustain the configuration during switchover - HZ19571
+    if [ -d "${SNMP_BACKUP_CONF}/run" ] && [ -d "${SNMP_BACKUP_CONF}/etc/snmp" ]; then
+        cp -f $SNMPD_CONF $SNMPD_CONF_PERSISTENT
+        cp -f $SNMPD_PWDF $SNMPD_PWDF_FILE_PERSISTENT
+        cp -f $SNMPD_ENGINEIDF $SNMPD_ENGINEIDF_FILE_PERSISTENT
+        cp -f $SNMP_PERSISTENT_DIR/snmpd.conf $SNMPD_CONF_RUN_PERSISTENT
+    fi
+    is_pid_running
+    if [ $? -ne 0 ]; then
+        error "failed to start snmp daemon" 
+        return 1
+    fi
+    trap - INT TERM EXIT
+    # the daemon is checked and held-on a bit
+    return 0
+}
+
+forcestop(){
+    if [ ! -f "$SNMPD_PID_FILE" ]; then
+        return 1
+    fi
+    PID=`cat $SNMPD_PID_FILE`
+    if is_pid_snmpd $PID; then
+      /bin/kill -9 $PID
+    fi
+    rm -f "$SNMPD_PID_FILE" || true
+    return 0
+}
+
+restart() {
+    stop
+    start
+}
+
+status() {
+    if is_pid_running > /dev/null
+    then
+        echo "$NAME status: running on pid `cat $SNMPD_PID_FILE`"
+    else 
+        echo "${NAME} status: not running"
+    fi
+    return 0
+}
+
+# build an integer version number
+make_int_version()
+{
+    local multiplier=1000000000
+    local version=0
+    local parts="`echo $1 | tr -c -d '0-9.' | sed 's/\./ /g'`"
+
+    for i in $parts ; do
+        temp=`expr $multiplier \* $i`
+        version=`expr $version + $temp`
+        multiplier=`expr $multiplier / 1000`
+    done
+
+    echo $version
+}
+
+version_is_greater_or_equal()
+{
+    local version1=`make_int_version $1`
+    local version2=`make_int_version $2`
+
+    if [ $version1 -ge $version2 ]; then
+        return 0
+    fi
+    return 1
+}
+
+is_dtls_supported(){
+    if [ ! -x "$SNMPD_CMD" ]; then
+        echo "no ($SNMPD_CMD not executable)"
+        return 0
+    fi
+
+    ROW="`$SNMPD_CMD -H 2>&1 | grep localCert`"
+    if [ -z "$ROW" ]; then
+        echo "no (localCert support is missing)"
+        return 0
+    fi
+
+    echo "yes"
+    return 0
+}
+
+is_exactEngineId_supported(){
+    if [ ! -x "$SNMPD_CMD" ]; then
+        echo "no ($SNMPD_CMD not executable)"
+        return 0
+    fi
+    VERSION=`$SNMPD_CMD --version | awk '/NET-SNMP\ version/ {print $3}'`
+    if version_is_greater_or_equal $VERSION $SNMP_ENGINEID_SUPPORT_VERSION; then
+        echo "yes"
+        return 0
+    fi
+
+    echo "no (NET-SNMP version is less than ${SNMP_ENGINEID_SUPPORT_VERSION})"
+    return 0
+}
+
+is_ipv6PortReverseByteOrder(){
+    if [ ! -x "$SNMPD_CMD" ]; then
+        echo "no ($SNMPD_CMD not executable)"
+         return 0
+    fi
+    VERSION=`$SNMPD_CMD --version | awk '/NET-SNMP\ version/ {print $3}'`
+    if version_is_greater_or_equal $VERSION $SNMP_IPV6_FIX_VERSION; then
+        echo "no (NET-SNMP version greater than or equal to ${SNMP_IPV6_FIX_VERSION})"
+        return 0
+    fi
+
+    echo "yes"
+    return 0
+}
+
+configure() {
+        noOfVar=$#
+
+        if [ $noOfVar -eq 2 ]; then
+            error "argument must be specified"
+            echo "usage: comea snmp configure agentAddress <address> community <communities>"
+            exit 1
+        fi
+
+        while [ $noOfVar -ge 3 ]; do
+            case $3 in
+            "agentAddress"*)
+                sed -i -e 's/\(agentaddress \).*\($\)/\1'$4'\2/' $SNMPD_CONF
+
+                # args shouldn't be matched against operations
+                noOfVar=`expr $noOfVar - 1`
+                shift
+                ;;
+            "dtlsNodeCredential"*)
+                FINGERPRINT="$4"
+                BEGIN="#tls:config:begin"
+                END="#tls:config:end"
+
+                TMPFILE="`mktemp`"
+
+                if [ -z $FINGERPRINT ]; then
+                    echo > $TMPFILE
+                else
+                    echo "[snmp] localCert $FINGERPRINT" > $TMPFILE
+                fi
+
+                # Delete any existing tls rows
+                SED_COMMAND1="/${BEGIN}/,/${END}/ c ${BEGIN}\n${END}"
+                sed -i "$SED_COMMAND1" $SNMPD_CONF
+
+                # Find insert point for tls region and insert
+                SED_COMMAND2="/${BEGIN}/ {r $TMPFILE
+                }"
+                sed -i "$SED_COMMAND2" $SNMPD_CONF
+
+                rm -f "$TMPFILE"
+
+                # args shouldn't be matched against operations
+                noOfVar=`expr $noOfVar - 1`
+                shift
+                ;;
+            "setCipherString"*)
+                BEGIN="#tls:filter:begin"
+                END="#tls:filter:end"
+
+                TMPFILE="`mktemp`"
+
+                printf "$4" >> $TMPFILE
+                CIPHERSTRING="`cat $TMPFILE | base64 --decode`"
+
+                if [ -z $CIPHERSTRING ]; then
+                   sed -i "/$BEGIN/,/$END/ c$BEGIN\n$END" $SNMPD_CONF
+                else
+                   sed -i "/$BEGIN/,/$END/ c$BEGIN\n\[snmp\] tlsAlgorithms  $CIPHERSTRING\n$END" $SNMPD_CONF
+                fi
+
+                rm -f "$TMPFILE"
+                # args shouldn't be matched against operations
+                noOfVar=`expr $noOfVar - 1`
+                shift
+                ;;
+            "community"*)
+                udp6=0
+                # Check for ipv6, i.e. udp6, if: set flag to true
+                if [ `grep -e 'udp6' $SNMPD_CONF | wc -l` -ne 0 ] ; then
+                    udp6=1
+                fi
+
+                BEGIN="com2sec:values:begin"
+                END="com2sec:values:end"
+                MARKER="#com2sec:values:begin:end"
+
+                TMPFILE="`mktemp`"
+                index=0
+                # store the ipAddress arg values in a array if present
+                if [ "$5" = "ipAddress" ]; then
+                   for j in `echo $6 | tr "," "\n"`; do
+                      IPADDR_ARRAY[index]="${j}"
+                      index=`expr $index + 1`
+                   done
+                fi
+
+                index=0
+                for i in `echo $4 | tr "," "\n"`; do
+                    COMMUNITY="`echo "${i}" | base64 --decode`"
+                    #assign default, this will be updated if the ipAddress parameter is not present
+                    IPADDR="default"
+
+                    # assign the corressponding ipaddress if present
+                    if [ -n "${IPADDR_ARRAY[index]}" ]; then
+                      IPADDR="${IPADDR_ARRAY[index]}"
+                    fi
+
+                    if [ ${udp6} -gt 0 ] ; then
+                        echo "com2sec6 'Com_$COMMUNITY' $IPADDR '$COMMUNITY'" >> $TMPFILE
+                        echo "com2sec 'Com_$COMMUNITY' $IPADDR '$COMMUNITY'" >> $TMPFILE
+                    else
+                        echo "com2sec 'Com_$COMMUNITY' $IPADDR '$COMMUNITY'" >> $TMPFILE
+                    fi
+                    index=`expr $index + 1`
+                done
+
+                # Delete any existing com2sec rows
+                SED_COMMAND1="/\W*#\W*${BEGIN}/,/\W*#\W*${END}/ c # ${BEGIN}\n\n${MARKER}\n\n# ${END}"
+                sed -i "$SED_COMMAND1" $SNMPD_CONF
+
+                # Find insert point for com2sec region and insert
+                SED_COMMAND2="/${MARKER}/ {r $TMPFILE
+                }"
+                sed -i "$SED_COMMAND2" $SNMPD_CONF
+
+                # Delete insert point
+                SED_COMMAND3="/${MARKER}/d"
+                sed -i "$SED_COMMAND3" $SNMPD_CONF
+
+                rm -f "$TMPFILE"
+
+                # if args ipAddress is present in the command then args shouldn't be matched against operations
+                if [ "$5" = "ipAddress" ]; then
+                  noOfVar=`expr $noOfVar - 2`
+                  shift
+                  shift
+                fi
+
+                # args shouldn't be matched against operations
+                noOfVar=`expr $noOfVar - 1`
+                shift
+                ;;
+            "engineId"*)
+                if [ -e "$SNMPD_ENGINEIDF" ]; then
+                    rm -rf $SNMPD_ENGINEIDF
+                fi
+                printf "$4" >> $SNMPD_ENGINEIDF
+
+                # args shouldn't be matched against operations
+                noOfVar=`expr $noOfVar - 1`
+                shift
+                ;;
+            "trapsess"*)
+                BEGIN="#inform:config:begin"
+                END="#inform:config:end"
+
+                TMPFILE="${4}"
+
+                # Delete any existing rows
+                SED_COMMAND1="/${BEGIN}/,/${END}/ c ${BEGIN}\n${END}"
+                sed -i "$SED_COMMAND1" $SNMPD_CONF
+
+                # Find insert point and insert
+                SED_COMMAND2="/${BEGIN}/ {r $TMPFILE
+                }"
+                sed -i "$SED_COMMAND2" $SNMPD_CONF
+
+                rm -f "$TMPFILE"
+
+                # args shouldn't be matched against operations
+                noOfVar=`expr $noOfVar - 1`
+                shift
+                ;;
+            *)
+                error "unknown argument"
+                echo $3
+                exit 1
+                ;;
+            esac
+
+            noOfVar=`expr $noOfVar - 1`
+            shift
+        done
+        if [ -d "${SNMP_BACKUP_CONF}/etc/snmp" ]; then
+            cp -f $SNMPD_CONF $SNMPD_CONF_PERSISTENT
+        fi
+    # restart
+}
+
+# Backup snmp runtime configuration in a persistent location
+# to sustain the configuration during switchover - HZ19571
+if [ -d "${SNMP_BACKUP_CONF}/run" ] && [ -d "${SNMP_BACKUP_CONF}/etc/snmp" ]; then
+    cp -f $SNMPD_CONF_PERSISTENT $SNMPD_CONF
+    cp -f $SNMPD_PWDF_FILE_PERSISTENT $SNMPD_PWDF
+    cp -f $SNMPD_CONF_RUN_PERSISTENT $SNMP_PERSISTENT_DIR/snmpd.conf
+fi
+
+case $2 in
+    "start")
+        start
+        ;;
+    "stop")
+        stop
+        ;;
+    "restart")
+        restart
+        ;;
+    "status")
+        status
+        ;;
+    "configure")
+        configure $@
+        ;;
+    "terminate")
+        stop
+        ;;
+    "isDtlsSupported")
+        is_dtls_supported
+        ;;
+    "isExactEngineIdSupported")
+        is_exactEngineId_supported
+        ;;
+    "ipv6PortReverseByteOrder")
+       is_ipv6PortReverseByteOrder
+      ;;
+    "")
+        error "sub-command must be specified"
+        echo "usage: $NAME snmp [start|stop|restart|status|configure|terminate|isDtlsSupported|isExactEngineIdSupported|ipv6PortReverseByteOrder]"
+        exit 1
+        ;;
+    *)
+        error "unknown command"
+        exit 1
+        ;;
+esac

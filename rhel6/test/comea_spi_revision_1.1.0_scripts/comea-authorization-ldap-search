@@ -1,0 +1,476 @@
+#!/bin/sh
+readonly ERR_ERROR=1
+readonly ERR_NOUSER=8
+readonly ERR_NO_FILTERCONFIG=8
+readonly ERR_USER_DOESNOTEXIST=2
+
+readonly TYPE_POSIX=1
+readonly TYPE_ERICSSON=2
+readonly TYPE_FLEXIBLE=3
+
+COMEA_LDAP_SEARCH=ldapsearch
+
+# For COM testing: Don't change the env variable name.
+DO_SYSLOG=0
+
+# Workaround for bug in CMW start of com. Sets wrong value in $HOME
+# This line should be deleted when fixed in OpenSAF
+MYUSER="`id -u -n`"
+HOME="`grep ${MYUSER} /etc/passwd | cut -d ":" -f6 `"
+# End workaround 
+
+
+syslog_message() {
+    if [ $DO_SYSLOG -eq 1 ]; then
+	logger -p local0.debug -t "`basename $0`[$$]" "$*"
+    fi
+}
+
+exit_now() {
+    if [ $DO_SYSLOG -eq 1 ]; then
+	logger -p local0.debug -t "`basename $0`[$$]: File $COMEA_LOG_DIR/ldapsearch.log" -f $COMEA_LOG_DIR/ldapsearch.log 2> /dev/null
+    fi
+    exit $1
+}
+
+# Check that the user exists in the LDAP directory using
+# an ldapsearch, e.g. ldapsearch -xLLL -l 10 "(uid=st_user_a)"
+# Returns 0 if user is found
+# Returns ERR_USER_DOESNOTEXIST if user is not found
+# Returns ERR_ERROR in case of LDAP failure
+check_user() {
+  syslog_message "Enter check_user()"
+  userid_l=$1
+
+  ldap_cmd_l="$COMEA_LDAP_SEARCH -xLLL -l 10 $COMEA_SERVERIP $COMEA_BASEDN (uid=$userid_l)"
+  syslog_message "LDAP Command: $ldap_cmd_l"
+  
+  ldap_res_l=`$ldap_cmd_l`
+  ldap_rc_l=$?
+  log_ldap "$ldap_cmd_l" $ldap_rc_l "$ldap_res_l"
+
+  if [ $ldap_rc_l -ne 0 ]; then
+    syslog_message "Exit check_user()"
+    return $ERR_ERROR
+  fi 
+  if [ -z "$ldap_res_l" ]; then
+    syslog_message "Exit check_user()"
+    return $ERR_USER_DOESNOTEXIST
+  fi
+  syslog_message "Exit check_user()"
+  return 0
+}
+
+format_filter() {
+  syslog_message "Enter format_filter(), filter type=$FILTER_TYPE"
+  syslog_message "Filter=$FILTER"
+  if [ "$FILTER_TYPE" = "$TYPE_FLEXIBLE" ]; then
+    FILTER=`echo $FILTER | sed s/\<UID\>/$USERID/g`
+	# Line below added due to artf165135
+	FILTER=`echo $FILTER | sed s/=\"\"/=$USERID/g`
+	syslog_message "Substituted filter=$FILTER"
+  fi
+
+  if [ "$FILTER_TYPE" = "$TYPE_ERICSSON" ]; then
+    FILTER="(&(objectClass=posixAccount)(uid=$USERID))"
+    TYPE="ericssonUserAuthorizationScope"
+  fi
+
+  if [ "$FILTER_TYPE" = "$TYPE_POSIX" ]; then
+    FILTER="(&(objectClass=posixGroup)(memberUid=$USERID))"
+    TYPE="cn"
+  fi
+  syslog_message "Exit format_filter()"
+  return 0
+}
+
+# Fetches roles from LDAP using the ldapsearch command,
+# e.g. ldapsearch -xLLL -l 10 "(&(objectClass=posixAccount)(uid=st_user_a))" ericssonUserAuthorizationScope
+# Returns 0 if roles were fetched, otherwise ERR_ERROR. 
+fetch_roles() {
+  syslog_message "Enter fetch_roles()"
+  filter_l=$1
+  type_l=$2
+  type_authenticate_l="ericssonUserAuthenticationScope"
+  ALLOWED_TARGET_TYPES=0
+  TBAC=0
+  ldap_cmd_l="$COMEA_LDAP_SEARCH -xLLL -l 10 $COMEA_SERVERIP $COMEA_BASEDN $filter_l $type_l"
+  syslog_message "LDAP Command: $ldap_cmd_l"
+  ldap_res_l=`$ldap_cmd_l`
+  ldap_rc_l=$?
+  log_ldap "$ldap_cmd_l" $ldap_rc_l "$ldap_res_l"
+
+  if [ $ldap_rc_l -ne 0 ]; then
+    return $ERR_ERROR
+  fi
+
+  # Removes the search attribute, e.g. ericssonUserAuthorizationScope in the example above.
+  roles=$(echo "$ldap_res_l" | grep ^$type_l: | awk '{ print $2 }')
+
+  # TBAC shall be enabled for filter Type with ERICSSON_ROLES when Node Type is specified.
+  if  [ "$FILTER_TYPE" == "$TYPE_ERICSSON" ] ; then
+    ldap_authenticate_cmd="$COMEA_LDAP_SEARCH -xLLL -l 10 $COMEA_SERVERIP $COMEA_BASEDN $filter_l $type_authenticate_l"
+    syslog_message "LDAP Authenticate Command: $ldap_authenticate_cmd"
+
+    ldap_auth_res=$($ldap_authenticate_cmd)
+    ldap_auth_rc=$?
+    log_ldap "$ldap_authenticate_cmd" $ldap_auth_rc "$ldap_auth_res"
+    syslog_message "ldap exec result is $ldap_auth_res && rc is $ldap_auth_rc"
+
+    authenticate_nodes=$(echo "$ldap_auth_res" | grep ^$type_authenticate_l: | awk '{ print $2 }')
+    authenticate_node_types=$(echo "$authenticate_nodes" |  sed 's/:/\ /g')
+    syslog_message "authenticate_nodes= $authenticate_nodes  authenticate_node_types= $authenticate_node_types"
+
+    ALLOWED_TARGET_TYPES=0
+
+    wildcard="`echo "$authenticate_node_types" | grep -F "*"`"
+    if [ ! -z "$wildcard" ] ; then
+        TBAC=1
+        ALLOWED_TARGET_TYPES="*:"
+        authenticate_node_types=`echo "$authenticate_node_types" | sed 's/\*//g'`
+    fi
+
+    if [ ! -z "$NODETYPE" ] ;then
+        TBAC=2
+        node_type_list=$(echo "$NODETYPE" | sed 's/:/\ /g')
+        # Check if the given node type in the model is present in the list of authenticated nodes.
+        for config_node_type in $node_type_list ; do
+            for nt in $authenticate_node_types; do
+                if [ "$config_node_type" == "$nt" ] ; then
+                    if [ "$ALLOWED_TARGET_TYPES" == 0 ] ; then
+                        ALLOWED_TARGET_TYPES=$nt
+                    else
+                        ALLOWED_TARGET_TYPES="$ALLOWED_TARGET_TYPES:"$nt
+                    fi
+                fi
+            done
+       done
+    fi
+  fi
+
+  echo "$TBAC $ALLOWED_TARGET_TYPES $roles"
+
+  syslog_message "Exit fetch_roles()"
+  return 0
+}
+
+# The type or types of network node current managed element represents in 
+# management perspective. The value of this attribute is used, when a role 
+# defined in the LDAP database is prefixed with Node Type. Roles definitions 
+# where the Node Type prefix does not match are skipped. 
+# For example nodeType=ims.kista.se
+filter_node_types() {
+  syslog_message "Enter filter_node_types(), filter type=$FILTER_TYPE"
+  # Only accept specifying node type for filter type 2 (Ericsson roles)
+  if [ "$FILTER_TYPE" = "$TYPE_ERICSSON" ]; then
+    roles_l="$1"
+    nodetype_l="$2"
+    if [ -n "$nodetype_l" ]; then
+      # Replace the ':' with space if several node types have
+      # been specified.
+      # syslog_message "nodetype - $nodetype, roles - $roles"
+
+      nodetypelist_l=`echo "$nodetype_l" | sed 's/:/\ /g'`
+
+      wildcard="`echo "$nodetypelist_l" | grep -F "*"`"
+      if [ ! -z "$wildcard" ] ; then
+
+          # This row selects roles with target type wildcard (i,e *) as prefix"
+          roles_result_l=$roles_result_l`echo "$roles_l" | grep "^\*:" | sed s/^\*:// | grep -v ":"`'\n'
+          nodetypelist_l=`echo "$nodetypelist_l" | sed 's/\*//g'`
+      fi
+
+      # Select all roles that have prefix as target type(s)
+      for tt in $nodetypelist_l; do
+
+        # This row selects roles of the format: "bcs.alvsjo:Admin"
+        roles_result_l=$roles_result_l`echo "$roles_l" | grep "^$tt:" | sed s/^$tt:// | grep -v ":"`'\n'
+      done
+
+      # Add also all roles without target type as prefix
+      # e.g "Supervisor" that have prefix as target type(s)
+      roles_result_l=$roles_result_l`echo "$roles_l" | sed 's/^://' | grep -v ":"`
+
+      # Add newlines after every found roles (needed when creating comma-separated answer)
+      for i in $roles_result_l; do
+          tmp_res_l=$tmp_res_l`echo "$i"`'\n'
+      done
+      roles_result_l=$tmp_res_l
+
+      /bin/echo -e "$roles_result_l"
+    else 
+      # If no node types are specified, select all roles that don't have any 
+      # prefix, or starting with a colon in the beginning, e.g. "Admin" or ":Admin".
+      for i in $roles_l; do
+        echo "$i" | sed 's/^://' | grep -v ":"
+      done
+    fi
+  else # For other filter types (Posix groups & Flexible), pick the non-prefix roles. 
+    roles_l="$1"
+    # Select all roles that don't have any prefix or have at least colon in the beginning
+    echo "$roles_l" | sed 's/^://' | grep -v ":"
+  fi
+  syslog_message "Exit filter_node_types()"
+  return 0
+}
+
+
+# LDAP base DN to a subtree of objects that is used to resolve alias roles to 
+# real roles.
+# The DN for such an object is role=[role], roleAliasesBaseDn.
+# For example:
+# If roleAliasesBaseDn = "dc=example,dc=com" and the user has role Admin, 
+# then if the object "role=Admin,dc=example,dc=com" exists and has attribute 
+# name = Administrator, the user gets the role Administrator instead.
+role_alias() {
+  syslog_message "Enter role_alias()"
+  # Only check aliases for filter type 2 (Ericsson roles)
+  if [ "$FILTER_TYPE" = "$TYPE_ERICSSON" ]; then
+    roles_l="$1"
+    alias_basedn_l=$2
+    # if group DN is set, resolve groups
+    if [ -n "$alias_basedn_l" ]; then
+      empty_l=0
+     
+      for i in $roles_l; do
+        if [ -n "$roles_result_l" ]; then
+          empty_l=1
+        fi
+        # Fetches aliases using ldapsearch, e.g. ldapsearch -xLLL -b role=SuperRoleOperator,dc=example,dc=com
+        ldap_cmd_l="$COMEA_LDAP_SEARCH -xLLL $COMEA_SERVERIP -b "role=$i,$alias_basedn_l""
+	syslog_message "LDAP Command: $ldap_cmd_l"
+	# ldap_cmd_l="$COMEA_LDAP_SEARCH -xLLL $COMEA_SERVERIP -b "role=$i""
+        ldap_res_l=`$ldap_cmd_l 2>/dev/null`
+
+        ldap_rc_l=$?
+
+        log_ldap "$ldap_cmd_l" $ldap_rc_l "$ldap_res_l"
+        # rc=32 is a case when an object cannot be found
+        if [ "$ldap_rc_l" != "0" -a "$ldap_rc_l" != "32" ]; then
+          return $ERR_ERROR
+        fi
+        # This line analyses the output from the search, and finds lines looking like e.g. 
+        # "name: ims-Operator", and extracts the role from it (ims-Operator) 
+        roles_result_l=$roles_result_l`echo "$ldap_res_l" | awk 'BEGIN { exists=0; if('$empty_l' != 0) { print "" } } { if(index($0, "ericssonUserAuthorizationScope: ") == 1) { exists=1; print $2; } } END { if(exists == 0) { print "'$i'" } }'`
+      done
+      /bin/echo -e "$roles_result_l"
+
+    else
+      for i in $roles_l; do
+        tmp="(&(objectClass=ericssonRoleAlias)(role=$i))"
+        ldap_cmd_l="$COMEA_LDAP_SEARCH -xLLL -l 10 $tmp"
+	syslog_message "LDAP Command: $ldap_cmd_l"
+        ldap_res_l=`$ldap_cmd_l 2>/dev/null`
+
+        ldap_rc_l=$?
+        if [ -z "$ldap_res_l" ]; then
+          roles_result_l=$roles_result_l" $i"
+        fi
+      done
+      #Remove leading space
+      roles_result_l=`echo "$roles_result_l"|sed s/^\ *//g`
+      /bin/echo -e "${roles_result_l}"
+    fi
+  else
+    roles_l="$1"
+    /bin/echo -e "$roles_l"
+  fi
+  syslog_message "Exit role_alias()"
+  return 0
+}
+
+# Make a comma separated line of the roles.
+csl() {
+  syslog_message "Enter csl()" 
+  lines_l="$1"
+  roles_result_l=`echo "$lines_l" | sort -u | awk '{ if ( lines_l == "" ) lines_l=$1; else lines_l=lines_l "," $1; } END { print lines_l; }'`
+  echo $roles_result_l | tr -d '\n'
+  syslog_message "Exit csl()" 
+  return 0
+}
+
+#Displays all the parsed LDAP attributes
+dump() {
+  echo userId:            $USERID
+  echo nodeType:          $NODETYPE
+  echo filter:            $FILTER
+  echo type:              $TYPE
+  echo roleAliasesBaseDn: $ROLEALIASESBASEDN
+}
+
+#Logs the details such as ldap command,return code,ldap command result into the file $COMEA_LDAP_SEARCH_LOG
+log_ldap() {
+  syslog_message "Enter log_ldap()" 
+  if [ -n "$COMEA_LDAP_SEARCH_LOG" ]; then
+    echo "$1" >> $COMEA_LDAP_SEARCH_LOG
+    echo "$2" >> $COMEA_LDAP_SEARCH_LOG
+    echo "$3" >> $COMEA_LDAP_SEARCH_LOG
+    echo "#-------" >> $COMEA_LDAP_SEARCH_LOG
+  fi
+  syslog_message "Exit log_ldap()" 
+}
+
+log_in() {
+  if [ -n "$COMEA_AUTHORIZATION_LOG" ]; then
+    echo "$@" >> $COMEA_AUTHORIZATION_LOG
+  fi
+}
+
+#parse the command into different attributes & validate them
+parse_opts() {
+  syslog_message "Enter parse_opts()" 
+  #shift away 'authorization',  'ldap' and 'search'
+  shift
+  shift
+  shift
+
+  lopts='userId:,filterType:,filter:,type:,nodeType:,roleAliasesBaseDn:,bindDn:,bindPassword:,useTls,tls-mode:'
+  args="$(getopt -n ${0} -l ${lopts} "" "$@")" || return $ERR_ERROR
+  set -- ${args}
+
+  while true; do
+    case "$1" in
+      --userId)
+        USERID=`echo $2 | tr -d "'"`
+        shift
+        ;;
+      --filterType)
+        FILTER_TYPE=`echo $2 | tr -d "'"`
+        shift
+        ;;
+      --filter)
+        FILTER=`echo $2 | tr -d "'"`
+        shift
+        ;;
+      --type)
+        TYPE=`echo $2 | tr -d "'"`
+        shift
+        ;;
+      --nodeType)
+        NODETYPE=`echo $2 | tr -d "'"`
+        shift
+        ;;
+      --roleAliasesBaseDn)
+        ROLEALIASESBASEDN=`echo $2 | tr -d "'"`
+        shift
+        ;;
+      --bindDn)
+        BINDDN=`echo $2 | tr -d "'"`
+        shift
+        ;;
+      --bindPassword)
+        PASSWORD=`echo $2 | tr -d "'"`
+        shift
+        ;;
+      --useTls)
+        USETLS="TRUE"
+        ;;
+      --tls-mode)
+        TLS_MODE=`echo $2 | tr -d "'"`
+        shift
+        ;;
+      --)
+        # End if parameter list
+        break
+        ;;
+      *)
+        echo "Unknown parameter: '$1'"
+        ;;
+    esac
+    shift
+  done
+
+  if [ -z "$USERID" ]; then
+    return $ERR_NOUSER
+  fi
+
+  if [ -z "$FILTER_TYPE" ]; then
+    return $ERR_NO_FILTERCONFIG
+  fi
+
+  if [ -n "$USETLS" ]; then
+    if [ "$TLS_MODE" = "STARTTLS" ] || [ -z "$TLS_MODE" ]; then
+      COMEA_LDAP_SEARCH=$COMEA_LDAP_SEARCH" -ZZ"
+    fi
+  fi
+
+  if [ -n "$BINDDN" ]; then
+    COMEA_LDAP_SEARCH=$COMEA_LDAP_SEARCH" -D $BINDDN"
+  fi
+
+  if [ -n "$PASSWORD" ]; then
+    COMEA_LDAP_SEARCH=$COMEA_LDAP_SEARCH" -w $PASSWORD"
+  fi
+
+  #test "$FILTER_TYPE" = "3" -a -z "$FILTER" -o -z "$TYPE" && return $ERR_ERROR
+  #ldapsearch -h ldap.acme.com -D "cn=john doe,o=acme" -w password -L "objectClass=*"
+  syslog_message "Exit parse_opts()" 
+}
+
+
+#Parse the ldap command into different arguments
+#Searches for the LDAP User
+#Sets the attributes "filter" & "type" based onthe LDAP Attribute "filtertype"
+#Fetches the roles from LDAP using ldapsearch command,filters them with the matching nodetype & also role aliases. 
+main() {
+  syslog_message "Command: $*" 
+  syslog_message "Enter main()" 
+  parse_opts "$@" || return $?
+  check_user $USERID || return $?
+  format_filter
+  AUTHENTICATION_INFO=$(fetch_roles $FILTER $TYPE) || return $?
+  AUTH_INFO=$(echo "$AUTHENTICATION_INFO" | sed 's/ /\ /g')
+  syslog_message "AUTHENTICATION_INFO=$AUTHENTICATION_INFO"
+  ROLES=""
+  count=0
+  for i in $AUTH_INFO; do
+    if [[ $count -eq 0 ]]; then
+       TBAC="$i"
+    elif [[ $count -eq 1 ]]; then
+          if [ $i -eq 0 ] ; then
+            ALLOWED_TARGET_TYPES=""
+          else
+            ALLOWED_TARGET_TYPES="$i"
+          fi
+    elif [[ $count -eq 2 ]]; then
+       ROLES="$ROLES$i"
+    elif [[ $count -gt 2 ]]; then
+       ROLES="$ROLES"$'\n'"$i"
+    fi
+    count=$count+1
+  done
+
+  syslog_message "TBAC is $TBAC ALLOWED_TARGET_TYPES is $ALLOWED_TARGET_TYPES ROLES is $ROLES"
+
+  # In case of Target Based Authentication (TBAC) only use the Allowed Target Types
+  if [ "$TBAC" -eq 1 ] || [ "$TBAC" -eq 2 ]; then
+     ROLES=$(filter_node_types "$ROLES" $ALLOWED_TARGET_TYPES) || return $?
+  else
+     ROLES=$(filter_node_types "$ROLES" $NODETYPE) || return $?
+  fi
+
+
+  ROLES=`role_alias "$ROLES" $ROLEALIASESBASEDN` || return $?
+  if [ "$TBAC" -eq 1 ] || [ "$TBAC" -eq 2 ]; then
+     ROLES=$(filter_node_types "$ROLES" $ALLOWED_TARGET_TYPES) || return $?
+  else
+     ROLES=$(filter_node_types "$ROLES" $NODETYPE) || return $?
+  fi
+
+  ROLES=`csl "$ROLES"` || return $?
+  syslog_message "Final ROLES -- $ROLES"
+  echo "$ROLES"
+  log_in "$@"
+}
+
+
+syslog_message "MYUSER=$MYUSER"
+syslog_message "HOME=$HOME"
+syslog_message "COMEA_LDAP_SEARCH=$COMEA_LDAP_SEARCH"
+syslog_message "COMEA_LOG_DIR=$COMEA_LOG_DIR"
+RES=`main "$@"` #RES contains the overall result of the executed ldapsearch command
+RC=$? #RC contains the "return code" of the previous command i.e., ldapsearch command
+echo $RES | tr -d '\n'
+syslog_message "Script done."
+exit_now $RC
+

@@ -1,0 +1,6 @@
+The comea scripts here are used for COM unit- and integration tests when testing COM 
+in combination with an old COMEA version that implements SPI revision 1.1.0.
+
+SPI revision 1.1.0 includes LDAP configuration functionality (sdp2531) 
+but it does not include COMEA Hardening (sdp2524) or SPI revisioning (MR24657).
+

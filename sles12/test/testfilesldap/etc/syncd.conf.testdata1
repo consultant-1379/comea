@@ -1,0 +1,127 @@
+file {
+    description    = "login access information",
+    local          = "/etc/login.allow",
+    remote         = "/cluster/etc/login.allow",
+    update_remote  = false,
+    control_only   = false,
+}
+
+file {
+    description    = "message of the day",
+    local          = "/etc/motd",
+    remote         = "/cluster/etc/motd",
+    update_remote  = false,
+    control_only   = false,
+}
+
+file {
+    description    = "public SSH host RSA1 key",
+    local          = "/etc/ssh/ssh_host_key.pub",
+    remote         = "/cluster/etc/ssh_host_key.pub",
+    update_remote  = false,
+    control_only   = false,
+}
+
+file {
+    description    = "private SSH host RSA key",
+    local          = "/etc/ssh/ssh_host_rsa_key",
+    remote         = "/cluster/etc/ssh_host_rsa_key",
+    update_remote  = false,
+    control_only   = false,
+}
+
+file {
+    description    = "public SSH host RSA key",
+    local          = "/etc/ssh/ssh_host_rsa_key.pub",
+    remote         = "/cluster/etc/ssh_host_rsa_key.pub",
+    update_remote  = false,
+    control_only   = false,
+    local_update_cmd = "/usr/lib/lde/config-management/ssh-known-hosts-config config reload",
+}
+
+file {
+    description    = "private SSH host DSA key",
+    local          = "/etc/ssh/ssh_host_dsa_key",
+    remote         = "/cluster/etc/ssh_host_dsa_key",
+    update_remote  = false,
+    control_only   = false,
+}
+
+file {
+    description    = "public SSH host DSA key",
+    local          = "/etc/ssh/ssh_host_dsa_key.pub",
+    remote         = "/cluster/etc/ssh_host_dsa_key.pub",
+    update_remote  = false,
+    control_only   = false,
+}
+
+file {
+    description    = "sudoers file",
+    local          = "/etc/sudoers",
+    remote         = "/cluster/etc/sudoers",
+    update_remote  = true,
+    control_only   = false,
+}
+
+file {
+	description    = "OpenLDAP Configuration",
+	local          = "OPENLDAP_LOCAL_PATH",
+	remote         = "OPENLDAP_REMOTE_PATH",
+	update_remote  = false,
+	control_only   = false,
+	local_update_cmd = ""
+}
+
+file {
+	description    = "LDAP Configuration",
+	local          = "LDAP_LOCAL_PATH",
+	remote         = "LDAP_LOCAL_PATH",
+	update_remote  = false,
+	control_only   = false,
+	local_update_cmd = ""
+}
+
+file {
+	description    = "NS Switch Configuration",
+	local          = "NSSWITCH_LOCAL_PATH",
+	remote         = "NSSWITCH_REMOTE_PATH",
+	update_remote  = false,
+	control_only   = false,
+	local_update_cmd = ""
+}
+
+file {
+	description    = "COM User Ldaprc File Configuration",
+	local          = "LDAPRC_LOCAL_PATH",
+	remote         = "LDAPRC_REMOTE_PATH",
+	update_remote  = false,
+	control_only   = false,
+	local_update_cmd = ""
+}
+
+file {
+	description    = "PAM SSHD Configuration",
+	local          = "SSHD_LOCAL_PATH",
+	remote         = "SSHD_REMOTE_PATH",
+	update_remote  = false,
+	control_only   = false,
+	local_update_cmd = ""
+}
+
+file {
+	description    = "PAM systemd-user Configuration",
+	local          = "SYSTEMD_USER_LOCAL_PATH",
+	remote         = "SYSTEMD_USER_REMOTE_PATH",
+	update_remote  = false,
+	control_only   = false,
+	local_update_cmd = ""
+}
+
+file {
+	description    = "LDAP Secret",
+	local          = "LDAP_SECRET_LOCAL_PATH",
+	remote         = "LDAP_SECRET_REMOTE_PATH",
+	update_remote  = false,
+	control_only   = false,
+	local_update_cmd = ""
+}

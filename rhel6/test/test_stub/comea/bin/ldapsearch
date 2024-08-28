@@ -1,0 +1,138 @@
+#!/bin/sh
+resf="$COMEA_ROOT_DIR/test_log/resfile.$$"
+
+# Use backup file, if original already has been removed
+# by the java test code.
+ff=$COMEA_ROOT_DIR/test_log/authorization-ldap-search.response
+
+cmd="$COMEA_ROOT_DIR/bin/ldapsearchscanner"
+LOGFILE="$COMEA_ROOT_DIR/test_log/ldapsearchlog"
+
+DO_SYSLOG=0
+
+syslog_message() {
+    if [ $DO_SYSLOG -eq 1 ]; then
+	logger -p local0.debug -t "`basename $0`[$$]" "$*"
+    fi
+}
+
+exit_now() {
+    if [ $DO_SYSLOG -eq 1 ]; then
+	logger -p local0.debug -t "`basename $0`[$$]: $COMEA_ROOT_DIR/test_log/authorization-ldap-search.response" -f $COMEA_ROOT_DIR/test_log/authorization-ldap-search.response 2> /dev/null
+	logger -p local0.debug -t "`basename $0`[$$]: $COMEA_ROOT_DIR/test_log/authorization-ldap-search.response.backup" -f $COMEA_ROOT_DIR/test_log/authorization-ldap-search.response.backup 2> /dev/null
+#	logger -p local0.debug -t "`basename $0`[$$]: $COMEA_ROOT_DIR/bin/ldapsearchscanner" -f $COMEA_ROOT_DIR/bin/ldapsearchscanner 2> /dev/null
+#	logger -p local0.debug -t "`basename $0`[$$]: $COMEA_ROOT_DIR/test_log/ldapsearchlog" -f $COMEA_ROOT_DIR/test_log/ldapsearchlog 2> /dev/null
+	logger -p local0.debug -t "`basename $0`[$$]: $COMEA_ROOT_DIR/resfile.$$" -f $resf 2> /dev/null
+    fi
+    exit $1
+}
+
+cmdst=$@
+cmdstr=`echo $cmdst | sed s/^"-ZZ "//`
+cmd2=${cmdstr##*role=}
+cmd3=${cmdstr##*objectClass=posixGroup}
+cmd4=${cmdstr##*objectClass=posixAccount}
+cmd5=${cmdstr##*objectClass=ericssonUserAuthorization}
+
+
+echo "$cmdstr" >> $COMEA_ROOT_DIR/test_log/authorization-ldap-search.in
+echo "$cmdstr" >> $LOGFILE
+
+echo $cmdstr >> $LOGFILE
+echo "ff: $ff" >> $LOGFILE
+echo "resf: $resf" >> $LOGFILE
+
+
+if [ "$cmd2" = "$cmdstr" -a "$cmd3" = "$cmdstr" -a "$cmd4" = "$cmdstr" -a "$cmd5" = "$cmdstr" ]; then
+        syslog_message "Will get dummy"
+	echo "Will get dummy" >> $LOGFILE
+	res=`sed '/#RESPONS_END_MARK/,$d' $ff`	
+        www=`echo $res | grep 'no_such_user'` 
+	if [ -n "$www" ]; then
+		res=""
+	else
+		res="Dummy text"
+	fi
+	syslog_message "res=$res"
+	echo "$res" 
+	exit_now 0
+fi
+if [ "$cmd2" != "$cmdstr" ]; then
+        syslog_message "Will get alias by user"
+	echo "Will get alias by user" >> $LOGFILE
+
+	#get alias section
+	mode=2
+
+	tmp=`echo $cmdstr | sed s/",dc=example,dc=com"// | sed s/"-xLLL -b role="//`
+	user=`echo ${tmp##* }`
+	echo "$cmd $mode $user $ff $resf" >> $LOGFILE
+
+	$cmd $mode $user $ff $resf
+	ldap_retval=$?
+	syslog_message "ldap_retval=$ldap_retval"
+	
+	res=`cat $resf`
+
+	echo "$res" >> $LOGFILE
+	syslog_message "res=$res"
+	echo "$res"	
+	exit_now 0
+fi
+if [ "$cmd3" != "$cmdstr" ]; then
+        syslog_message "Will get main part, type 1"
+	echo "Will get main part, type 1" >> $LOGFILE
+
+	#get main part cn
+	mode=1
+
+	$cmd $mode cn $ff $resf
+	ldap_retval=$?
+	syslog_message "ldap_retval=$ldap_retval"
+	
+	res=`cat $resf`
+	syslog_message "res=$res"
+	echo "$res"
+	exit_now 0
+fi
+if [ "$cmd4" != "$cmdstr" ]; then
+        syslog_message "Will get main part, type 2"
+	echo "Will get main part, type 2" >> $LOGFILE
+
+	#get main part uid
+	mode=1
+
+        #To handle ericssonUserAuthenticationScope used to get the configured node types in LDAP.
+        if [[ "$cmdstr" =~ "ericssonUserAuthentication" ]]; then
+               echo "$cmd $mode uid $ff $resf ericssonUserAuthentication" >> $LOGFILE
+               $cmd $mode uid $ff $resf ericssonUserAuthentication
+        else
+               echo "$cmd $mode uid $ff $resf" >> $LOGFILE
+               $cmd $mode uid $ff $resf
+        fi
+        ldap_retval=$?
+
+	syslog_message "ldap_retval=$ldap_retval"
+	
+	res=`cat $resf`
+	echo "$res" >> $LOGFILE
+	syslog_message "res=$res"
+	echo "$res"
+	exit_now 0
+fi
+
+if [ "$cmd5" != "$cmdstr" ]; then
+        syslog_message "Will get main part, type 3"
+	echo "Will get main part, type 3" >> $LOGFILE
+	mode=1
+	
+	$cmd $mode ericssonUserAuthenticationScope $ff $resf
+	ldap_retval=$?
+	syslog_message "ldap_retval=$ldap_retval"
+	
+	res=`cat $resf`
+	syslog_message "res=$res"
+	echo "$res"
+	exit_now 0
+fi
+

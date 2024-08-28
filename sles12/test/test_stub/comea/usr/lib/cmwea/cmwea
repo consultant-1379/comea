@@ -1,0 +1,3 @@
+#!/bin/sh
+echo "authentication-method-set"
+exit 0

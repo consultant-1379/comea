@@ -1,0 +1,3 @@
+#!/bin/sh
+echo $@ >> $COMEA_ROOT_DIR/test_log/authentication-method-set_commit.log
+exit 0

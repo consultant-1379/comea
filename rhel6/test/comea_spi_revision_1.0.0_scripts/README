@@ -1,0 +1,3 @@
+The comea scripts here are used for COM unit- and integration tests when testing COM 
+in combination with an old COMEA version that implements SPI revision 1.0.0.
+

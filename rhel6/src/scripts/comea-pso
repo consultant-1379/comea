@@ -1,0 +1,289 @@
+#!/bin/sh
+##
+## Copyright (c) 2011Ericsson AB, 2010 - 2011.
+##
+
+## All Rights Reserved. Reproduction in whole or in part is prohibited
+## without the written consent of the copyright owner.
+##
+## ERICSSON MAKES NO REPRESENTATIONS OR WARRANTIES ABOUT THE
+## SUITABILITY OF THE SOFTWARE, EITHER EXPRESS OR IMPLIED, INCLUDING
+## BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF MERCHANTABILITY,
+## FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT. ERICSSON
+## SHALL NOT BE LIABLE FOR ANY DAMAGES SUFFERED BY LICENSEE AS A
+## RESULT OF USING, MODIFYING OR DISTRIBUTING THIS SOFTWARE OR ITS
+## DERIVATIVES.
+##
+##
+
+# The script is designed to work in a limited linux environment where the support of certain utilities
+# like for instance ps and pgrep varies.
+# This is a bourne shell script and is free from any non compatible syntax (e.g bash specific features)
+
+SELF_NAME=`basename $0`
+
+COM_DIRECTORY="/com-apr9010443"
+
+PERSISTENT_STORAGE_API_DEFAULT_PATH="/usr/share/pso/storage-paths"
+
+# Set the root Persistent Storage path
+if [ -z ${PERSISTENT_STORAGE_API} ]; then
+    PERSISTENT_STORAGE_API="${PERSISTENT_STORAGE_API_DEFAULT_PATH}"
+fi
+
+#echo $PERSISTENT_STORAGE_API
+
+PERSISTENT_STORAGE_API_CONFIG="${PERSISTENT_STORAGE_API}/config"
+PERSISTENT_STORAGE_API_CLEAR="${PERSISTENT_STORAGE_API}/clear"
+PERSISTENT_STORAGE_API_NO_BACKUP="${PERSISTENT_STORAGE_API}/no-backup"
+PERSISTENT_STORAGE_API_USER="${PERSISTENT_STORAGE_API}/user"
+PERSISTENT_STORAGE_API_SOFTWARE="${PERSISTENT_STORAGE_API}/software"
+
+info() {
+    # remove comment if debug info
+    #logger "[INFO ${SELF_NAME}] $1"
+    exit 1
+}
+
+# Check the exit value from the last command and return 1 if it failed.
+check_exit_value () {
+    if [ $? -ne 0 ]; then
+        logger "[ERROR ${SELF_NAME}] $1"
+        exit 1
+    fi
+}
+
+initialize(){
+	
+    #create the COM repository sub folders in PSO
+    if [ -f ${PERSISTENT_STORAGE_API_CLEAR} ]; then
+        REPOS=`cat $PERSISTENT_STORAGE_API_CLEAR`
+        if [ -d ${REPOS} ]; then
+            mkdir -m 775 ${REPOS}${COM_DIRECTORY} > /dev/null 2>&1
+        else
+            info "No PSO area found (clear)"
+        fi
+    else
+        info "No PSO API available (clear)"
+    fi
+
+    if [ -f ${PERSISTENT_STORAGE_API_CONFIG} ]; then
+        REPOS=`cat $PERSISTENT_STORAGE_API_CONFIG`
+        if [ -d ${REPOS} ]; then
+            mkdir -m 750 ${REPOS}${COM_DIRECTORY} > /dev/null 2>&1
+        else
+            info "No PSO area found (config)"
+        fi
+    else
+        info "No PSO API available (config)"
+    fi
+
+    if [ -f ${PERSISTENT_STORAGE_API_NO_BACKUP} ]; then
+        REPOS=`cat $PERSISTENT_STORAGE_API_NO_BACKUP`
+        if [ -d ${REPOS} ]; then
+            mkdir -m 770 ${REPOS}${COM_DIRECTORY} > /dev/null 2>&1
+        else
+            info "No PSO area found (backup)"
+        fi
+    else
+        info "No PSO API available (backup)"
+    fi
+
+    if [ -f ${PERSISTENT_STORAGE_API_SOFTWARE} ]; then
+        REPOS=`cat $PERSISTENT_STORAGE_API_SOFTWARE`
+        if [ -d ${REPOS} ]; then
+            mkdir -m 750 ${REPOS}${COM_DIRECTORY} > /dev/null 2>&1
+        else
+            info "No PSO area found (software)"
+        fi
+    else
+        info "No PSO API available (software)"
+    fi
+
+    if [ -f ${PERSISTENT_STORAGE_API_USER} ]; then
+        REPOS=`cat $PERSISTENT_STORAGE_API_USER`
+        if [ -d ${REPOS} ]; then
+            mkdir -m 750 ${REPOS}${COM_DIRECTORY} > /dev/null 2>&1
+        else
+            info "No PSO area found (user)"
+        fi
+    else
+        info "No PSO API available (user)"
+    fi
+}
+
+uninitialize(){
+
+    #Remove the COM repository sub folders in PSO
+    if [ -f ${PERSISTENT_STORAGE_API_CLEAR} ]; then
+        REPOS=`cat $PERSISTENT_STORAGE_API_CLEAR`
+        if [ -d ${REPOS} ]; then
+            rm -rf ${REPOS}${COM_DIRECTORY} > /dev/null 2>&1
+        else
+            info "No PSO area found (clear)"
+        fi
+    else
+        info "No PSO API available (clear)"
+    fi
+
+    if [ -f ${PERSISTENT_STORAGE_API_CONFIG} ]; then
+        REPOS=`cat $PERSISTENT_STORAGE_API_CONFIG`
+        if [ -d ${REPOS} ]; then
+            rm -rf ${REPOS}${COM_DIRECTORY} > /dev/null 2>&1
+        else
+            info "No PSO area found (config)"
+        fi
+    else
+        info "No PSO API available (config)"
+    fi
+
+    if [ -f ${PERSISTENT_STORAGE_API_NO_BACKUP} ]; then
+        REPOS=`cat $PERSISTENT_STORAGE_API_NO_BACKUP`
+        if [ -d ${REPOS} ]; then
+            rm -rf ${REPOS}${COM_DIRECTORY} > /dev/null 2>&1
+        else
+            info "No PSO area found (backup)"
+        fi
+    else
+        info "No PSO API available (backup)"
+    fi
+
+    if [ -f ${PERSISTENT_STORAGE_API_SOFTWARE} ]; then
+        REPOS=`cat $PERSISTENT_STORAGE_API_SOFTWARE`
+        if [ -d ${REPOS} ]; then
+            rm -rf ${REPOS}${COM_DIRECTORY} > /dev/null 2>&1
+        else
+            info "No PSO area found (software)"
+        fi
+    else
+        info "No PSO API available (software)"
+    fi
+
+    if [ -f ${PERSISTENT_STORAGE_API_USER} ]; then
+        REPOS=`cat $PERSISTENT_STORAGE_API_USER`
+        if [ -d ${REPOS} ]; then
+            rm -rf ${REPOS}${COM_DIRECTORY} > /dev/null 2>&1
+        else
+            info "No PSO area found (user)"
+        fi
+    else
+        info "No PSO API available (user)"
+    fi
+}
+
+clear() {
+
+    if [ -f ${PERSISTENT_STORAGE_API_CLEAR} ]; then
+        CONF_REPOS=`cat $PERSISTENT_STORAGE_API_CLEAR`
+        REPOS=${CONF_REPOS}${COM_DIRECTORY}
+    else
+        info "PSO API for clear not available"
+    fi
+
+    if [ -d ${REPOS} ]; then
+        echo "${REPOS}"
+    else
+        info "No COM clear repository properly setup"
+    fi
+
+}
+
+config() {
+
+    if [ -f ${PERSISTENT_STORAGE_API_CONFIG} ]; then
+        CONF_REPOS=`cat $PERSISTENT_STORAGE_API_CONFIG`
+        REPOS=${CONF_REPOS}${COM_DIRECTORY}
+    else
+        info "PSO API for config not available"
+    fi
+
+    if [ -d ${REPOS} ]; then
+        echo "${REPOS}"
+    else
+        info "No COM configuration repository properly setup"
+    fi
+
+}
+
+no_backup() {
+
+    if [ -f ${PERSISTENT_STORAGE_API_NO_BACKUP} ]; then
+        CONF_REPOS=`cat $PERSISTENT_STORAGE_API_NO_BACKUP`
+        REPOS=${CONF_REPOS}${COM_DIRECTORY}
+    else
+        info "PSO API for no-backup not available"
+    fi
+
+    if [ -d ${REPOS} ]; then
+        echo "${REPOS}"
+    else
+        info "No COM no-backup repository properly setup"
+    fi
+}
+
+software() {
+
+    if [ -f ${PERSISTENT_STORAGE_API_SOFTWARE} ]; then
+        CONF_REPOS=`cat $PERSISTENT_STORAGE_API_SOFTWARE`
+        REPOS=${CONF_REPOS}${COM_DIRECTORY}
+    else
+        info "PSO API for software not available"
+    fi
+
+    if [ -d ${REPOS} ]; then
+        echo "${REPOS}"
+    else
+        info "No COM software repository properly setup"
+    fi
+}
+
+user() {
+
+    if [ -f ${PERSISTENT_STORAGE_API_USER} ]; then
+        CONF_REPOS=`cat $PERSISTENT_STORAGE_API_USER`
+        REPOS=${CONF_REPOS}${COM_DIRECTORY}
+    else
+        info "PSO API for user not available"
+    fi
+
+    if [ -d ${REPOS} ]; then
+        echo "${REPOS}"
+    else
+        info "No COM user repository properly setup"
+    fi
+}
+
+case $2 in
+    "initialize")
+        initialize
+        ;;
+    "uninitialize")
+        uninitialize
+        ;;
+    "clear")
+        clear
+        ;;
+    "config")
+        config
+        ;;
+     "no-backup")
+        no_backup
+        ;;
+    "software")
+        software
+        ;;
+    "user")
+        user
+        ;;
+    "")
+        echo "sub-command must be specified"
+        echo "usage: ${SELF_NAME} [initialize|uninitialize|clear|config|no-backup|software|user]"
+        exit 1
+        ;;
+    *)
+        echo "unknown command"
+        exit 1
+        ;;
+esac
+
+exit 0

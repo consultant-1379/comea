@@ -1,0 +1,129 @@
+#!/bin/sh
+##
+## Copyright (c) 2011Ericsson AB, 2009 - 2010.
+##
+
+## All Rights Reserved. Reproduction in whole or in part is prohibited
+## without the written consent of the copyright owner.
+##
+## ERICSSON MAKES NO REPRESENTATIONS OR WARRANTIES ABOUT THE
+## SUITABILITY OF THE SOFTWARE, EITHER EXPRESS OR IMPLIED, INCLUDING
+## BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF MERCHANTABILITY,
+## FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT. ERICSSON
+## SHALL NOT BE LIABLE FOR ANY DAMAGES SUFFERED BY LICENSEE AS A
+## RESULT OF USING, MODIFYING OR DISTRIBUTING THIS SOFTWARE OR ITS
+## DERIVATIVES.
+##
+##
+
+# The script is designed to work in a limited linux environment where the support of certain utilities
+# like for instance ps and pgrep varies.
+# This is a bourne shell script and is free from any non compatible syntax (e.g bash specific features)
+
+SELF_NAME=`basename $0`
+
+# double-check for comea root folder
+if [ -z ${COMEA_ROOT_DIR} ]; then
+    COMEA_ROOT_DIR="/opt/com/comea"
+fi
+
+# set output flag to true if not testing
+if [ -z ${COMEA_MSG_OUT} ] -o [ ${COMEA_MSG_OUT} != "false" ]; then
+    COMEA_MSG_OUT="true"
+fi
+
+error() {
+    logger "[ERROR ${SELF_NAME}] $1"
+    exit 1
+}
+
+int_conf() {
+
+     # CBA NBI FILE_SYSTEM API
+    CBA_FILEM_STORAGE="/usr/share/ericsson/cba/nbi-root-dir"
+
+    if [ -z ${FILEM_INT_CONF} ]; then
+        FILEM_INT_CONF="/usr/share/filem/internal_filem_root.conf"
+    fi
+
+    # check for file including internal path
+    if [ -f ${FILEM_INT_CONF} ]; then
+        FILEM_CONF_STORAGE=`cat $FILEM_INT_CONF`
+    fi
+
+    # check if it is valid path in config file
+    if [ ! -z ${FILEM_CONF_STORAGE} ] && [ -d ${FILEM_CONF_STORAGE} ]; then
+        FILESTORAGE=${FILEM_CONF_STORAGE}
+    elif [ -f ${CBA_FILEM_STORAGE} ]; then
+        # check for if CBA NBI FILE INT_ROOT EXISTS
+        FILESTORAGE=`cat ${CBA_FILEM_STORAGE}`
+        if [ -z ${FILESTORAGE} ] || [ ! -d ${FILESTORAGE} ]; then
+               FILESTORAGE="/var/filem/internal_root"
+        fi
+    else
+        # No config file, using default path
+        FILESTORAGE="/var/filem/internal_root"
+    fi
+
+    # check for valid internal path
+    if [ -d ${FILESTORAGE} ]; then
+        echo "Directory: ${FILESTORAGE} exists" > /dev/null
+    else
+        error "Directory ${FILESTORAGE} does not exist"
+        return 1
+    fi
+
+    echo "${FILESTORAGE}"
+    return 0
+}
+
+nbi_conf() {
+
+    if [ -z ${FILEM_NBI_CONF} ]; then
+        FILEM_NBI_CONF="/usr/share/filem/nbi_filem_root.conf"
+    fi
+
+    # check for file including internal path
+    if [ -f ${FILEM_NBI_CONF} ]; then
+        FILESTORAGE=`cat $FILEM_NBI_CONF`
+    else
+        # No config file, using default path
+        FILESTORAGE="/var/filem/nbi_root"
+    fi
+
+    # check for valid internal path
+    if [ -d ${FILESTORAGE} ]; then
+        echo "Directory: ${FILESTORAGE} exists" > /dev/null
+    else
+        fusermount -u -z ${FILESTORAGE}
+        if [ -d ${FILESTORAGE} ]; then
+            echo "Directory: ${FILESTORAGE} exists" > /dev/null
+        else
+            error "Directory ${FILESTORAGE} does not exist ($?)"
+            return 1
+        fi
+    fi
+
+    echo "${FILESTORAGE}"
+    return 0
+}
+
+
+case $2 in
+    "nbiRoot")
+        nbi_conf
+        ;;
+    "internalRoot")
+        int_conf
+        ;;
+    "")
+        echo "sub-command must be specified"
+        echo "usage: ${SELF_NAME} [nbiRoot|internalRoot]"
+        exit 1
+        ;;
+    *)
+        echo "unknown command"
+        exit 1
+        ;;
+esac
+

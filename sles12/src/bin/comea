@@ -1,0 +1,107 @@
+#!/bin/sh
+#
+##
+## Copyright (c) 2009-2014 Ericsson AB.
+##
+## All Rights Reserved. Reproduction in whole or in part is prohibited
+## without the written consent of the copyright owner.
+##
+## ERICSSON MAKES NO REPRESENTATIONS OR WARRANTIES ABOUT THE
+## SUITABILITY OF THE SOFTWARE, EITHER EXPRESS OR IMPLIED, INCLUDING
+## BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF MERCHANTABILITY,
+## FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT. ERICSSON
+## SHALL NOT BE LIABLE FOR ANY DAMAGES SUFFERED BY LICENSEE AS A
+## RESULT OF USING, MODIFYING OR DISTRIBUTING THIS SOFTWARE OR ITS
+## DERIVATIVES.
+##
+##
+
+# The script is designed to work in a limited linux environment where the support of certain utilities
+# like for instance ps and pgrep varies.
+# This is a bourne shell script and is free from any non compatible syntax (e.g bash specific features)
+
+if [ -z "${COMEA_ROOT_DIR}" ]; then
+    COMEA_ROOT_DIR="/opt/com/comea/"
+fi
+
+# Check COM_USER_MODE env to run snmp, authentication, terminate and vsftp using sudo.
+if [ "${COM_USER_MODE}" = "1" ]; then
+    CMD="$(which sudo 2> /dev/null)"
+fi
+
+VERSION="1.2"
+NAME=$(basename "$0")
+
+error() {
+    echo "$NAME" error: "$1" >&2
+}
+
+help () {
+    echo "usage: $NAME <command> <sub-command> [options] [args]"
+    echo "commands:"
+    echo "  help                           Display this help information"
+    echo "  version                        Display version information"
+    echo "  spi-revision                   Display COMEA SPI revision information"
+    echo "  terminate                      Clean-up all allocated resources"
+    echo "  snmp                           Manage Net-SNMP availability and configuration"
+    echo "  netconfssh                     Configure Netconf Port number"
+    echo "  clissh                         Configure Cli Port number"
+    echo "  ssh                            Configure cipher suites for COM Managed SSHD daemon"
+    echo "  file-system                    Configuration utility for COM File Management"
+    echo "  pso                            System persistent root storage locations (PSO API)"
+    echo "  authentication                 Set authentication type"
+    echo "  authentication ldap            Set LDAP authentication configuration"
+    echo "  authorization ldap search      Get roles of an user by using LDAP search"
+    echo "  vsftpd                         Manage com-vsftp daemon process and the corresponding configuration file"
+}
+
+case $1 in
+    "help")
+        help
+        ;;
+    "version")
+        echo $VERSION
+        ;;
+    "spi-revision")
+        ${COMEA_ROOT_DIR}/scripts/comea-spi-revision "$@"
+        ;;
+    "terminate")
+        $CMD ${COMEA_ROOT_DIR}/scripts/comea-snmp snmp "$@"
+        ;;
+    "snmp")
+        $CMD ${COMEA_ROOT_DIR}/scripts/comea-snmp "$@"
+        ;;
+    "netconfssh")
+        $CMD ${COMEA_ROOT_DIR}/scripts/comea-ssh "$@"
+	;;
+    "clissh")
+        $CMD ${COMEA_ROOT_DIR}/scripts/comea-ssh "$@"
+	;;
+    "ssh")
+        $CMD ${COMEA_ROOT_DIR}/scripts/comea-ssh "$@"
+        ;;
+    "file-system")
+        ${COMEA_ROOT_DIR}/scripts/comea-file-system "$@"
+        ;;
+    "pso")
+        ${COMEA_ROOT_DIR}/scripts/comea-pso "$@"
+        ;;
+    "authentication")
+	$CMD ${COMEA_ROOT_DIR}/scripts/comea-authentication-method-set "$@"
+	;;
+    "vsftpd")
+        $CMD ${COMEA_ROOT_DIR}/scripts/comea-vsftpd "$@"
+        ;;
+    "authorization")
+        error "Option authorization is obsolete."
+        exit 1
+	;;
+    "")
+        error "Command must be specified." && help
+        exit 1
+        ;;
+    *)
+        error "Unknown command."
+        exit 1
+        ;;
+esac

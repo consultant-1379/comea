@@ -1,0 +1,348 @@
+#!/bin/bash
+##
+## Copyright (c) 2018 Ericsson AB.
+##
+## All Rights Reserved. Reproduction in whole or in part is prohibited
+## without the written consent of the copyright owner.
+##
+## ERICSSON MAKES NO REPRESENTATIONS OR WARRANTIES ABOUT THE
+## SUITABILITY OF THE SOFTWARE, EITHER EXPRESS OR IMPLIED, INCLUDING
+## BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF MERCHANTABILITY,
+## FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT. ERICSSON
+## SHALL NOT BE LIABLE FOR ANY DAMAGES SUFFERED BY LICENSEE AS A
+## RESULT OF USING, MODIFYING OR DISTRIBUTING THIS SOFTWARE OR ITS
+## DERIVATIVES.
+##
+
+#The script is designed to update com-vsftpd configuration file,
+#start and stop com-vsftpd based on administrativeState attribute value of FtpTlsServer
+
+SELF_NAME="$(basename "$0")"
+
+SUCCESS=0
+ERROR=1
+
+# Enabling debug logs to syslog 0=disabled , 1=enabled (syslog_error_message logs will always be written to syslog).
+DO_SYSLOG=0
+
+COM_VSFTPD_ROOT_DIR="@COM_VSFTPD_INSTALL_PREFIX@"
+
+# double-check for com-vsftpd root folder
+if [ -z "${COM_VSFTPD_ROOT_DIR}" ]; then
+   COM_VSFTPD_ROOT_DIR="/opt/com-vsftpd"
+fi
+
+# This function logs debug messages to syslog if DO_SYSLOG flag is enabled.
+syslog_debug_message() {
+   if [ $DO_SYSLOG -eq 1 ]; then
+      logger -p local0.debug -t "$SELF_NAME[$$]" "$*"
+   fi
+}
+
+# This function logs syslog_error_message messages to syslog and stderr.
+syslog_error_message() {
+   remove_lock_file
+   echo "ERROR $*" >&2
+   logger -p local0.err -t "$SELF_NAME[$$]" "$*"
+   exit $ERROR
+}
+
+# This function logs syslog_help_message messages to syslog and stderr.
+syslog_help_message() {
+   echo "ERROR $*" >&2
+   logger -p local0.err -t "$SELF_NAME[$$]" "$*"
+   help
+   exit $ERROR
+}
+
+signal_handler(){
+   syslog_debug_message "Caught Signal"
+   remove_lock_file
+   exit $ERROR
+}
+
+#Traps any interrupts caught during script execution
+#and removes the LOCK_FILE if created
+trap signal_handler INT TERM
+
+# Will return the pid originally started and stored
+#in pid file, or "0" if not running anymore.
+get_main_pid() {
+   syslog_debug_message "Enter get_main_pid()"
+   if [ -f "$PID_FILE" ];
+   then
+      running_pid=$(cat "${PID_FILE}")
+      pids=$(pidof "${COM_VSFTPD_CMD}")
+      for pidval in $pids
+      do
+         if [ "$pidval" == "$running_pid" ]
+         then
+            echo "$pidval"
+            syslog_debug_message "Exit get_main_pid() with pid:$pidval"
+            return
+         fi
+      done
+   fi
+   echo 0
+   syslog_debug_message "Exit get_main_pid()"
+}
+
+is_process_running() {
+   syslog_debug_message "Enter is_process_running()"
+   COM_VSFTPD_PID="$(get_main_pid)"
+   if [ "$COM_VSFTPD_PID" -eq 0 ];
+   then
+      syslog_debug_message "Exit is_process_running() as com-vsftp daemon process is not running"
+      return 1
+   fi
+   syslog_debug_message "Exit is_process_running() with com-vsftp daemon process PID:$COM_VSFTPD_PID"
+   return 0
+}
+
+#The configuration file for vsftpd should
+#be provided in this function
+get_config_file_path(){
+   syslog_debug_message "Enter get_config_file()"
+   echo "${COM_VSFTPD_ROOT_DIR}/run/com-vsftpd.conf"
+   syslog_debug_message "Exit get_config_file()"
+}
+
+#To avoid healthCheck failure during restart
+create_lock_file(){
+   syslog_debug_message "Enter create_lock_file()"
+   LOCK_FILE="$CONFIG_FILE_PATH/vsftp.lock"
+   touch "$LOCK_FILE"
+   syslog_debug_message "Exit create_lock_file()"
+}
+
+remove_lock_file(){
+   syslog_debug_message "Enter remove_lock_file()"
+   if [ ! -f "${LOCK_FILE}" ]; then
+      syslog_debug_message "${LOCK_FILE} does not exist"
+   else
+      rm -f "$LOCK_FILE"
+      syslog_debug_message "LOCK_FILE :${LOCK_FILE} successfully removed"
+   fi
+   syslog_debug_message "Exit remove_lock_file()"
+}
+
+stop_daemon() {
+   syslog_debug_message "Enter stop_daemon()"
+   if is_process_running
+   then
+      COM_VSFTPD_PID=$(cat "${PID_FILE}")
+      # stop vsftpd
+      kill -9 "$COM_VSFTPD_PID"
+      RETVAL=$?
+      if [ "${RETVAL}" -ne 0 ]; then
+         syslog_error_message "com-vsftpd failed to be stopped with RETVAL: ${RETVAL}"
+      else
+         COM_VSFTPD_PID=$(cat "${PID_FILE}")
+         syslog_debug_message "com-vsftpd daemon process (PID: $COM_VSFTPD_PID) successfully stopped"
+         rm -f "$PID_FILE"
+         rm -f "$AMF_HANDLE_FILE"
+      fi
+      syslog_debug_message "Exit stop_daemon() with return value:$RETVAL"
+      return $RETVAL
+   fi
+   syslog_debug_message "Exit stop_daemon() as com-vsftp daemon process is not running"
+   return $SUCCESS
+}
+
+start_daemon() {
+   syslog_debug_message "Enter start_daemon()"
+   # start vsftpd
+   ${COM_VSFTPD_CMD} "${COM_VSFTPD_CONF_RUN_FILE}" > /dev/null 2>&1 &
+   EXIT_CODE=$?
+   COM_VSFTPD_PID=$!
+   if [ ${EXIT_CODE} -eq 0 ]
+   then
+      if [ "$COM_VSFTPD_PID" != "" ]
+      then
+         echo $COM_VSFTPD_PID > "${PID_FILE}"
+         touch "$AMF_HANDLE_FILE"
+         syslog_debug_message "com-vsftpd daemon process (PID: $COM_VSFTPD_PID) successfully started with configuration: ${COM_VSFTPD_CONF_RUN_FILE}"
+      else
+         syslog_error_message "com-vsftpd daemon process failed to start as no pid created"
+      fi
+   else
+      syslog_error_message "com-vsftpd daemon process failed to start with exit code:$EXIT_CODE"
+   fi
+   syslog_debug_message "Exit start_daemon()"
+   return $EXIT_CODE
+}
+
+restart_daemon(){
+   syslog_debug_message "Enter restart_daemon()"
+   if stop_daemon
+   then
+      #VSFTPD will be launched by AMF by creating this file.
+      #AMF starts VSFTPD as a cron job so that PAM session will be created.
+      touch "$AMF_HANDLE_FILE"
+   fi
+   syslog_debug_message "Exit restart_daemon()"
+}
+
+update_conf_file() {
+   syslog_debug_message "Enter update_conf_file() with args:$*"
+   if [ ! -z "$2" ]; then
+      sed -i '/\<'"$1"'\>/ c '"$1"'='"$2"'' "$COM_VSFTPD_CONF_RUN_FILE"
+   else
+      syslog_help_message "Value must be specified"
+   fi
+   syslog_debug_message "Exit update_conf_file()"
+}
+
+configure() {
+   syslog_debug_message "Enter configure()"
+   noOfArg=$#
+
+   if [ "$noOfArg" -lt 3 ]; then
+      syslog_help_message "sub-option must be specified"
+   fi
+
+   COM_VSFTPD_CONF_TEMPLATE="${COM_VSFTPD_ROOT_DIR}/etc/com-vsftpd.conf"
+
+   if [ ! -f ${COM_VSFTPD_CONF_TEMPLATE} ]; then
+      syslog_error_message "${COM_VSFTPD_CONF_TEMPLATE} does not exist or is not a regular file"
+   fi
+
+   #(disable_daemon option)Fix for upgrade failure ref:HW71392
+   if [ ! -f "${COM_VSFTPD_CONF_RUN_FILE}" ] || [ "$(grep -c "disable_daemon" "${COM_VSFTPD_CONF_RUN_FILE}")" -eq 1 ]; then
+      cp -f $COM_VSFTPD_CONF_TEMPLATE "$COM_VSFTPD_CONF_RUN_FILE"
+   fi
+
+   while [ "$noOfArg" -ge 3 ]; do
+      case $3 in
+      "--port")
+          update_conf_file "listen_port" "$4"
+          # args shouldn't be matched against operations
+          noOfArg=$(( noOfArg - 1 ))
+          shift
+          ;;
+      "--minport")
+          update_conf_file "pasv_min_port" "$4"
+          # args shouldn't be matched against operations
+          noOfArg=$(( noOfArg - 1 ))
+          shift
+          ;;
+      "--maxport")
+          update_conf_file "pasv_max_port" "$4"
+          # args shouldn't be matched against operations
+          noOfArg=$(( noOfArg - 1 ))
+          shift
+          ;;
+      "--timeout")
+          update_conf_file "idle_session_timeout" "$4"
+          # args shouldn't be matched against operations
+          noOfArg=$(( noOfArg - 1 ))
+          shift
+          ;;
+      "--ciphers")
+          update_conf_file "ssl_ciphers" "$4"
+          # args shouldn't be matched against operations
+          noOfArg=$(( noOfArg - 1 ))
+          shift
+          ;;
+      "--cacert")
+          update_conf_file "ca_certs_file" "$4"
+          # args shouldn't be matched against operations
+          noOfArg=$(( noOfArg - 1 ))
+          shift
+          ;;
+      "--rsacert")
+          update_conf_file "rsa_cert_file" "$4"
+          # args shouldn't be matched against operations
+          noOfArg=$(( noOfArg - 1 ))
+          shift
+          ;;
+      "--rsakey")
+          update_conf_file "rsa_private_key_file" "$4"
+          # args shouldn't be matched against operations
+          noOfArg=$(( noOfArg - 1 ))
+          shift
+          ;;
+      "--clear")
+          remove_conf_file
+          syslog_debug_message "Exit configure()"
+          exit $SUCCESS
+          ;;
+      *)
+          syslog_help_message "Unknown sub-option"
+          ;;
+       esac
+       noOfArg=$(( noOfArg - 1 ))
+
+       shift
+  done
+
+  restart_vsftp_daemon
+  syslog_debug_message "Exit configure()"
+}
+
+restart_vsftp_daemon(){
+   syslog_debug_message "Enter restart_vsftp_daemon()"
+   create_lock_file
+   restart_daemon
+   remove_lock_file
+   syslog_debug_message "Exit restart_vsftp_daemon()"
+}
+
+remove_conf_file(){
+   syslog_debug_message "Enter remove_conf_file()"
+   if stop_daemon
+   then
+      if [ ! -f "${COM_VSFTPD_CONF_RUN_FILE}" ]; then
+         syslog_debug_message "$COM_VSFTPD_CONF_RUN_FILE does not exist or is not a regular file"
+      else
+         rm -f "$COM_VSFTPD_CONF_RUN_FILE"
+         syslog_debug_message "Successfully removed com-vsftp daemon configuration file: ${COM_VSFTPD_CONF_RUN_FILE}"
+      fi
+   fi
+   syslog_debug_message "Exit remove_conf_file()"
+}
+
+COM_VSFTPD_CMD="${COM_VSFTPD_ROOT_DIR}/bin/com-vsftpd"
+COM_VSFTPD_CONF_RUN_FILE=$(get_config_file_path)
+CONFIG_FILE_PATH="$(dirname "$COM_VSFTPD_CONF_RUN_FILE")" #returns configuration file path
+PID_FILE="$CONFIG_FILE_PATH/com-vsftpd.pid"
+AMF_HANDLE_FILE="$CONFIG_FILE_PATH/AMF_handles_VSFTPD"
+
+help() {
+    cat <<_usage_
+    usage: ${SELF_NAME} <option>
+
+    option:
+        get-config-file-path         Get com-vsftp daemon configuration file path.
+        configure <sub-options>      Update or remove com-vsftp daemon configuration file.
+
+            sub-options:
+                   [ --port     <value>]       com-vsftpd listen port for incoming FTP TLS connections.
+                   [ --minport  <value>]       Minimum port to allocate for PASV style data connections.
+                   [ --maxport  <value>]       Maximum port to allocate for PASV style data connections.
+                   [ --timeout  <value>]       Timeout, in seconds, which is the maximum idle session timeout.
+                   [ --ciphers  <value>]       Ciphers for encrypted TLS connections.
+                   [ --cacert   <value>]       Absolute path of CA cert.
+                   [ --rsacert  <value>]       Absolute path of RSA certificate.
+                   [ --rsakey   <value>]       Absolute path of RSA private key.
+                   [ --clear ]                 Clear/remove com-vsftpd configuration file.
+_usage_
+}
+
+case $2 in
+   "get-config-file-path")
+       echo "$COM_VSFTPD_CONF_RUN_FILE"
+       ;;
+   "configure")
+       #shellcheck disable=SC2068
+       configure $@
+       ;;
+   "")
+       syslog_help_message "option must be specified"
+       ;;
+   *)
+       syslog_help_message "unknown option"
+       ;;
+esac
+
+exit $SUCCESS

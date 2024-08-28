@@ -1,0 +1,110 @@
+
+# Variable definitions
+set(COMEA_TMP_INSTALLDIR ${TMP_DIR}/comea)
+
+# COMEA template directory
+set(COMEA_TEMPLATE_DIR "${CMAKE_CURRENT_LIST_DIR}/../templates")
+
+
+# Create empty directories
+file(MAKE_DIRECTORY ${COMEA_TMP_INSTALLDIR}/${COMEA_INSTALL_PREFIX}/bin
+                    ${COMEA_TMP_INSTALLDIR}/${COMEA_INSTALL_PREFIX}/etc
+                    ${COMEA_TMP_INSTALLDIR}/${COMEA_INSTALL_PREFIX}/run
+                    ${COMEA_TMP_INSTALLDIR}/${COMEA_INSTALL_PREFIX}/log
+                    ${COMEA_TMP_INSTALLDIR}/${COMEA_INSTALL_PREFIX}/scripts
+                    ${COMEA_TMP_INSTALLDIR}/etc
+                    ${COMEA_TMP_INSTALLDIR}/usr/share/filem
+                    ${COMEA_TMP_INSTALLDIR}/var/filem/nbi_root
+                    ${COMEA_TMP_INSTALLDIR}/var/filem/internal_root
+)
+
+file(GLOB COMEA_SCRIPT_FILES "${CMAKE_CURRENT_LIST_DIR}/scripts/*")
+
+# Define Comea install targets
+
+if (USEFILEM)
+	install(DIRECTORY ${COMEA_TMP_INSTALLDIR}/usr/share/filem
+		DESTINATION usr/share
+		DIRECTORY_PERMISSIONS ${PERMISSIONS_770}
+		COMPONENT comea
+	)
+
+	install(DIRECTORY ${COMEA_TMP_INSTALLDIR}/var/filem
+		DESTINATION var
+		DIRECTORY_PERMISSIONS ${DEFAULT_PERMISSIONS}
+		COMPONENT comea
+	)
+
+	install(DIRECTORY ${COMEA_TMP_INSTALLDIR}/var/filem/nbi_root
+	                  ${COMEA_TMP_INSTALLDIR}/var/filem/internal_root
+		DESTINATION var/filem
+		DIRECTORY_PERMISSIONS ${PERMISSIONS_770}
+		COMPONENT comea
+	)
+
+	install(FILES etc/fuse.conf
+		DESTINATION etc
+		PERMISSIONS ${PERMISSIONS_640}
+		COMPONENT comea
+	)
+endif ()
+
+install(DIRECTORY ${COMEA_TMP_INSTALLDIR}/${COMEA_INSTALL_PREFIX}/bin
+                  ${COMEA_TMP_INSTALLDIR}/${COMEA_INSTALL_PREFIX}/scripts
+	DESTINATION ${COMEA_INSTALL_PREFIX}
+	DIRECTORY_PERMISSIONS ${DEFAULT_PERMISSIONS}
+	COMPONENT comea
+)
+
+install(DIRECTORY ${COMEA_TMP_INSTALLDIR}/${COMEA_INSTALL_PREFIX}/etc
+	DESTINATION ${COMEA_INSTALL_PREFIX}
+	DIRECTORY_PERMISSIONS ${PERMISSIONS_750}
+	COMPONENT comea
+)
+
+install(DIRECTORY ${COMEA_TMP_INSTALLDIR}/${COMEA_INSTALL_PREFIX}/run
+                  ${COMEA_TMP_INSTALLDIR}/${COMEA_INSTALL_PREFIX}/log
+	DESTINATION ${COMEA_INSTALL_PREFIX}
+	DIRECTORY_PERMISSIONS ${PERMISSIONS_770}
+	COMPONENT comea
+)
+
+install(FILES bin/comea
+	DESTINATION ${COMEA_INSTALL_PREFIX}/bin
+	PERMISSIONS ${DEFAULT_PERMISSIONS}
+	COMPONENT comea
+)
+
+install(FILES ${COMEA_SCRIPT_FILES}
+	DESTINATION ${COMEA_INSTALL_PREFIX}/scripts
+	PERMISSIONS ${DEFAULT_PERMISSIONS}
+	COMPONENT comea
+)
+
+install(FILES etc/sshd_config_oam
+	DESTINATION ${COMEA_INSTALL_PREFIX}/etc
+	PERMISSIONS ${PERMISSIONS_640}
+	COMPONENT comea
+)
+
+install(FILES etc/dscp.com.cfg
+	DESTINATION usr/share/ericsson/cba/dscp
+	PERMISSIONS ${PERMISSIONS_644}
+	COMPONENT comea
+)
+
+configure_file(${COMEA_TEMPLATE_DIR}/snmpd.conf.in ${COMEA_TMP_INSTALLDIR}/snmpd.conf @ONLY)
+
+install(FILES ${COMEA_TMP_INSTALLDIR}/snmpd.conf
+        DESTINATION ${COMEA_INSTALL_PREFIX}/etc
+        PERMISSIONS ${PERMISSIONS_640}
+        COMPONENT comea
+)
+
+configure_file(${COMEA_TEMPLATE_DIR}/comea-vsftpd.in ${COMEA_TMP_INSTALLDIR}/comea-vsftpd @ONLY)
+
+install(FILES ${COMEA_TMP_INSTALLDIR}/comea-vsftpd
+        DESTINATION ${COMEA_INSTALL_PREFIX}/scripts
+        PERMISSIONS ${DEFAULT_PERMISSIONS}
+        COMPONENT comea
+)

@@ -1,0 +1,99 @@
+#!/bin/sh
+
+# inputs
+# $1 is the mode
+# $2 the string to search for
+# $3 file to search in
+# $4 output file
+
+
+# usage
+#
+# ldapseachscanner <mode> <searchfor> <filename> <output file>
+#
+# mode 1 or 2
+#      1: getMainPart "dn: <searchfor>"
+#      2: getAliasSection "n: role=<searchfor>,dc"
+#
+usage(){
+
+	echo "ldapseachscanner <mode> <searchfor> <filename> <output file>" 1>&2
+	echo "mode: 1 or 2" 1>&2
+	echo "      1: getMainPart \"dn: <searchfor>\"" 1>&2
+	echo "      2: getAliasSection \"n: role=<searchfor>,d\"" 1>&2
+}
+
+findstring() {
+	found=0
+
+	while read line; do
+	   matched=`echo $line|grep "$1"`
+
+	   if [ "$matched" != "" ] || [ $found = 1 ]
+	   then
+	       matched=`echo $line|grep "#RESPONS_END_MARK"`
+	       if [ "$matched" != "" ]
+	       then
+	           break
+	       fi
+	       found=1
+	       echo "$line" >> $3
+	   fi
+	done < "$2"
+}
+
+
+getMainPart() {
+
+	searchfor="dn: $2"
+
+	findstring "$searchfor" $3 $4
+}
+
+getAliasSection() {
+
+	searchfor="n: role=$2,dc"
+	findstring "$searchfor" $3 $4
+}
+
+checkWritePermissions() {
+	touch $1
+	retval=$?
+	if ! [ $retval -eq 0 -a -w $1 ]; then
+		echo "No write access for file $1" 1>&2
+		exit 1
+	fi
+}
+
+
+if [ $# -eq 4 ] || [ $# -eq 5 ]
+then
+	checkWritePermissions $4
+	# Try opening the authorization-ldap-search.response file,
+	# and if it does not exist, try with the backup file.
+	# Also see artf176951.
+	responseFilename=$3
+	if ! [ -r $responseFilename ]
+	then
+		echo "No read access to file $3. Trying $3.backup..." 1>&2
+		responseFilename=${3}.backup
+		if ! [ -r $responseFilename ]
+		then
+			echo "No read access to $3.backup either. Exiting" 1>&2
+			exit 2
+		fi
+	fi
+	if [ $1 -eq 1 ]
+	then
+		getMainPart $1 $2 $responseFilename $4
+	fi
+	
+	if [ $1 -eq 2 ]
+	then
+		getAliasSection $1 $2 $responseFilename $4
+	fi
+else
+	usage
+	exit 1
+fi
+exit 0

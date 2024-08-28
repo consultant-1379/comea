@@ -1,0 +1,83 @@
+#!/bin/sh
+#
+##
+## Copyright (c) 2011Ericsson AB, 2009 - 2010.
+##
+## All Rights Reserved. Reproduction in whole or in part is prohibited
+## without the written consent of the copyright owner.
+##
+## ERICSSON MAKES NO REPRESENTATIONS OR WARRANTIES ABOUT THE
+## SUITABILITY OF THE SOFTWARE, EITHER EXPRESS OR IMPLIED, INCLUDING
+## BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF MERCHANTABILITY,
+## FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT. ERICSSON
+## SHALL NOT BE LIABLE FOR ANY DAMAGES SUFFERED BY LICENSEE AS A
+## RESULT OF USING, MODIFYING OR DISTRIBUTING THIS SOFTWARE OR ITS
+## DERIVATIVES.
+##
+##
+##
+
+if [ -z ${COMEA_ROOT_DIR} ]; then
+    COMEA_ROOT_DIR="/opt/com/comea/"
+fi
+
+# Check COM_USER_MODE env to run snmp, authentication, authorization and terminate using sudo.
+if [ "${COM_USER_MODE}" = "1" ]; then
+    CMD="`which sudo 2> /dev/null`"
+fi
+
+VERSION="1.2"
+NAME=`basename $0`
+
+error() {
+    echo $NAME error: $1 >&2
+}
+
+help () {
+    echo "usage: $NAME <command> <sub-command> [options] [args]"
+    echo "commands:"
+    echo "  help                      Display this help information"
+    echo "  version                   Display version information"
+    echo "  terminate                 Clean-up all allocated resources"
+    echo "  snmp                      Manage Net-SNMP availability and configuration"
+    echo "  file-system               Configuration utility for COM File Management"
+    echo "  pso                       System persistent root storage locations (PSO API)"
+    echo "  authentication            Set authentication type"
+    echo "  authentication ldap       Set LDAP authentication configuration"
+    echo "  authorization ldap search Get roles of an user by using LDAP search"
+}
+
+case $1 in
+    "help")
+        help
+        ;;
+    "version")
+        echo $VERSION
+        ;;
+    "terminate")
+        $CMD ${COMEA_ROOT_DIR}/scripts/comea-snmp snmp $@
+        ;;
+    "snmp")
+        $CMD ${COMEA_ROOT_DIR}/scripts/comea-snmp $@
+        ;;
+    "file-system")
+        $CMD ${COMEA_ROOT_DIR}/scripts/comea-file-system $@
+        ;;
+    "pso")
+        ${COMEA_ROOT_DIR}/scripts/comea-pso $@
+        ;;
+    "authentication")
+	$CMD ${COMEA_ROOT_DIR}/scripts/comea-authentication-method-set $@
+	;;
+    "authorization")
+	$CMD ${COMEA_ROOT_DIR}/scripts/comea-authorization-ldap-search $@
+	;;
+    "")
+        error "command must be specified" && help
+        exit 1
+        ;;
+    *)
+        error "unknown command"
+        exit 1
+        ;;
+esac
